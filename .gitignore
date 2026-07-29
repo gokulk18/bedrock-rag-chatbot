@@ -1,0 +1,33 @@
+# ==============================================================================
+# Terraform Gitignore Standard Rules
+# ==============================================================================
+
+# Local .terraform directories containing provider binary plugins
+**/.terraform/
+
+# Local state files & backups (remote backend S3 is used instead)
+*.tfstate
+*.tfstate.*
+*.tfstate.backup
+
+# Crash logs
+crash.log
+crash.*.log
+
+# Override files & local variable files with potential secrets
+override.tf
+override.tf.json
+*_override.tf
+*_override.tf.json
+*.tfvars
+!*.tfvars.example
+
+# CLI configuration files
+.terraformrc
+terraform.rc
+
+# OS & Editor metadata
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/

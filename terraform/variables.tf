@@ -1,35 +1,89 @@
-variable "aws_region" {
-  description = "AWS Region in which to deploy the application."
-  type        = string
-  default     = "us-east-1"
-}
+# ==============================================================================
+# Project Input Variables
+# ==============================================================================
+# Core variable declarations for the Amazon Bedrock RAG Chatbot infrastructure.
+# Every variable includes a type, description, validation rule, and default value.
+# ==============================================================================
 
 variable "project_name" {
-  description = "Short, globally unique-safe project prefix."
   type        = string
+  description = "The project name used for resource naming prefixes and tags."
   default     = "bedrock-rag-chatbot"
+
+  validation {
+    condition     = can(regex("^[a-z0-9-]+$", var.project_name))
+    error_message = "project_name must contain only lowercase alphanumeric characters and hyphens."
+  }
 }
 
 variable "environment" {
-  description = "Deployment environment name."
   type        = string
+  description = "Target deployment environment (dev, staging, prod)."
   default     = "dev"
+
+  validation {
+    condition     = contains(["dev", "staging", "prod"], var.environment)
+    error_message = "environment must be one of: dev, staging, prod."
+  }
+}
+
+variable "aws_region" {
+  type        = string
+  description = "AWS region where all infrastructure resources will be deployed."
+  default     = "us-east-1"
+
+  validation {
+    condition     = can(regex("^[a-z]{2}-[a-z]+-[0-9]{1}$", var.aws_region))
+    error_message = "aws_region must be a valid AWS region identifier (e.g., us-east-1)."
+  }
+}
+
+variable "owner" {
+  type        = string
+  description = "Team or individual owner responsible for this infrastructure deployment."
+  default     = "devops-team"
+
+  validation {
+    condition     = length(trimspace(var.owner)) > 0
+    error_message = "owner variable cannot be empty."
+  }
+}
+
+variable "common_tags" {
+  type        = map(string)
+  description = "Additional key-value tags to append to all managed resources."
+  default     = {}
 }
 
 variable "bedrock_model_id" {
-  description = "Generation model used by RetrieveAndGenerate."
   type        = string
-  default     = "amazon.nova-micro-v1:0"
+  description = "Amazon Bedrock foundation model ID used for text generation."
+  default     = "anthropic.claude-3-5-sonnet-20241022-v2:0"
+
+  validation {
+    condition     = length(trimspace(var.bedrock_model_id)) > 0
+    error_message = "bedrock_model_id cannot be empty."
+  }
 }
 
 variable "budget_limit_usd" {
-  description = "Monthly cost budget in USD."
   type        = number
-  default     = 10
+  description = "Monthly budget limit in USD for AWS cost management notifications."
+  default     = 100
+
+  validation {
+    condition     = var.budget_limit_usd > 0
+    error_message = "budget_limit_usd must be greater than 0."
+  }
 }
 
 variable "budget_alert_email" {
-  description = "Optional email address for budget alerts. Leave empty to disable email subscriptions."
   type        = string
-  default     = ""
+  description = "Email address to receive AWS Budget threshold notifications."
+  default     = "admin@example.com"
+
+  validation {
+    condition     = can(regex("^[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\\.[a-zA-Z]{2,}$", var.budget_alert_email))
+    error_message = "budget_alert_email must be a valid email address format."
+  }
 }

@@ -1,0 +1,56 @@
+<!DOCTYPE html>
+<html lang="en" data-theme="light">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <meta name="description" content="A modern, framework-free chatbot frontend for an Amazon Bedrock RAG experience." />
+    <title>Bedrock RAG Assistant</title>
+    <link rel="stylesheet" href="./styles.css" />
+  </head>
+  <body>
+    <div class="app-shell">
+      <section class="chatbot-card" aria-label="Bedrock knowledge assistant">
+        <header class="chat-header">
+          <div class="brand-area">
+            <div class="brand-icon" aria-hidden="true">
+              <img src="./assets/chatbot-icon.svg" alt="" />
+            </div>
+            <div class="brand-copy">
+              <h1>Bedrock Assistant</h1>
+              <p class="subtitle">Powered by Amazon Bedrock Knowledge Base</p>
+            </div>
+          </div>
+
+          <div class="header-actions">
+            <div class="status-pill" aria-label="Assistant is online">
+              <span class="status-dot"></span>
+              Online
+            </div>
+            <button id="theme-toggle" class="icon-button" type="button" aria-label="Toggle color theme">
+              <span class="theme-icon" aria-hidden="true">🌙</span>
+              <span class="theme-label">Dark</span>
+            </button>
+            <button id="clear-chat" class="icon-button" type="button">Clear chat</button>
+          </div>
+        </header>
+
+        <section id="notifications" class="notifications" aria-live="polite"></section>
+
+        <main class="conversation-panel" id="conversation-panel">
+          <div id="conversation" class="conversation" aria-live="polite"></div>
+        </main>
+
+        <form id="chat-form" class="composer">
+          <label class="sr-only" for="prompt-input">Ask a question</label>
+          <textarea id="prompt-input" rows="1" placeholder="Ask about Terraform, providers, modules, or state..."></textarea>
+          <button id="send-button" class="send-button" type="submit">
+            <span class="send-label">Send</span>
+            <span class="spinner" aria-hidden="true"></span>
+          </button>
+        </form>
+      </section>
+    </div>
+
+    <script type="module" src="./app.js"></script>
+  </body>
+</html>

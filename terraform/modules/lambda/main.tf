@@ -1,25 +1,71 @@
-variable "name_prefix" { type = string }
-variable "functions" {
-  type = map(object({ source_dir = string, handler = string, role_arn = string, environment = map(string) }))
-}
-data "archive_file" "function" {
-  for_each    = var.functions
+# ==============================================================================
+# Reusable AWS Lambda Module
+# ==============================================================================
+# Provisions an AWS Lambda function with:
+# - Python runtime (3.12)
+# - Inlined source code packaged into a ZIP deployment archive
+# - CloudWatch Log Group with log retention
+# - Optional S3 bucket event notification trigger & execution permission
+# ==============================================================================
+
+# Archives source code into a deployment ZIP package
+data "archive_file" "lambda_zip" {
   type        = "zip"
-  source_dir  = each.value.source_dir
-  output_path = "${path.module}/.build/${each.key}.zip"
+  output_path = "${path.module}/${var.function_name}.zip"
+
+  source {
+    content  = var.source_code
+    filename = "index.py"
+  }
 }
+
+# Lambda Function Resource
 resource "aws_lambda_function" "this" {
-  for_each         = var.functions
-  function_name    = "${var.name_prefix}-${each.key}"
-  role             = each.value.role_arn
-  handler          = each.value.handler
-  runtime          = "python3.13"
-  timeout          = 30
-  memory_size      = 512
-  filename         = data.archive_file.function[each.key].output_path
-  source_code_hash = data.archive_file.function[each.key].output_base64sha256
-  environment { variables = each.value.environment }
-  tracing_config { mode = "Active" }
+  function_name    = var.function_name
+  role             = var.role_arn
+  handler          = var.handler
+  runtime          = var.runtime
+  filename         = data.archive_file.lambda_zip.output_path
+  source_code_hash = data.archive_file.lambda_zip.output_base64sha256
+
+  timeout     = var.timeout
+  memory_size = var.memory_size
+
+  environment {
+    variables = var.environment_variables
+  }
+
+  tags = var.tags
 }
-output "function_arns" { value = { for key, fn in aws_lambda_function.this : key => fn.arn } }
-output "function_names" { value = { for key, fn in aws_lambda_function.this : key => fn.function_name } }
+
+# Dedicated CloudWatch Log Group for Lambda Logs
+resource "aws_cloudwatch_log_group" "this" {
+  name              = "/aws/lambda/${aws_lambda_function.this.function_name}"
+  retention_in_days = var.log_retention_in_days
+  tags              = var.tags
+}
+
+# ------------------------------------------------------------------------------
+# Optional S3 Trigger & Permission
+# ------------------------------------------------------------------------------
+
+resource "aws_lambda_permission" "s3" {
+  count         = var.s3_bucket_arn != null ? 1 : 0
+  statement_id  = "AllowS3Invoke"
+  action        = "lambda:InvokeFunction"
+  function_name = aws_lambda_function.this.function_name
+  principal     = "s3.amazonaws.com"
+  source_arn    = var.s3_bucket_arn
+}
+
+resource "aws_s3_bucket_notification" "s3_trigger" {
+  count  = (var.s3_bucket_id != null && var.s3_bucket_arn != null) ? 1 : 0
+  bucket = var.s3_bucket_id
+
+  lambda_function {
+    lambda_function_arn = aws_lambda_function.this.arn
+    events              = ["s3:ObjectCreated:*"]
+  }
+
+  depends_on = [aws_lambda_permission.s3]
+}

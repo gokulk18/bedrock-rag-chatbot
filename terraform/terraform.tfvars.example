@@ -10,8 +10,6 @@ environment        = "dev"
 aws_region         = "us-east-1"
 owner              = "devops-team"
 bedrock_model_id   = "anthropic.claude-3-5-sonnet-20241022-v2:0"
-budget_limit_usd   = 100
-budget_alert_email = "devops@example.com"
 
 common_tags = {
   Repository = "https://github.com/example/bedrock-rag-chatbot"

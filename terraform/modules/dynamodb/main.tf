@@ -1,19 +1,35 @@
-variable "table_name" { type = string }
-resource "aws_dynamodb_table" "conversations" {
+# ==============================================================================
+# Reusable DynamoDB Table Module
+# ==============================================================================
+# Provisions a production-grade Amazon DynamoDB table with:
+# - PAY_PER_REQUEST (On-Demand) capacity mode
+# - Server-side encryption enabled
+# - Point-in-time recovery (PITR) enabled
+# - Time-to-Live (TTL) attribute expiration
+# ==============================================================================
+
+resource "aws_dynamodb_table" "this" {
   name         = var.table_name
   billing_mode = "PAY_PER_REQUEST"
-  hash_key     = "session_id"
-  range_key    = "timestamp"
+  hash_key     = var.hash_key
+
   attribute {
-    name = "session_id"
+    name = var.hash_key
     type = "S"
   }
-  attribute {
-    name = "timestamp"
-    type = "S"
+
+  ttl {
+    attribute_name = var.ttl_attribute
+    enabled        = true
   }
-  point_in_time_recovery { enabled = true }
-  server_side_encryption { enabled = true }
+
+  server_side_encryption {
+    enabled = true
+  }
+
+  point_in_time_recovery {
+    enabled = true
+  }
+
+  tags = var.tags
 }
-output "table_name" { value = aws_dynamodb_table.conversations.name }
-output "table_arn" { value = aws_dynamodb_table.conversations.arn }

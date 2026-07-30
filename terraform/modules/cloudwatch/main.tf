@@ -1,19 +1,69 @@
-variable "name_prefix" { type = string }
-variable "documents_bucket_name" { type = string }
-variable "ingestion_lambda_arn" { type = string }
-variable "ingestion_lambda_name" { type = string }
-resource "aws_cloudwatch_event_rule" "document_upload" {
-  name          = "${var.name_prefix}-document-sync"
-  event_pattern = jsonencode({ source = ["aws.s3"], detail-type = ["Object Created", "Object Deleted"], detail = { bucket = { name = [var.documents_bucket_name] } } })
+# ==============================================================================
+# Reusable Amazon CloudWatch Alarms Module
+# ==============================================================================
+# Provisions metric alarms for:
+# - Query Lambda Errors
+# - API Gateway 5XX Errors
+# - DynamoDB Throttled Requests
+# All alarms publish state changes to the specified SNS topic.
+# ==============================================================================
+
+# Query Lambda Error Alarm
+resource "aws_cloudwatch_metric_alarm" "lambda_errors" {
+  alarm_name          = "${var.name_prefix}-query-lambda-errors"
+  comparison_operator = "GreaterThanOrEqualToThreshold"
+  evaluation_periods  = 1
+  metric_name         = "Errors"
+  namespace           = "AWS/Lambda"
+  period              = 300
+  statistic           = "Sum"
+  threshold           = var.lambda_error_threshold
+  alarm_description   = "Triggered when Query Lambda function encounters errors."
+
+  dimensions = {
+    FunctionName = var.query_lambda_function_name
+  }
+
+  alarm_actions = [var.sns_topic_arn]
+  tags          = var.tags
 }
-resource "aws_cloudwatch_event_target" "ingestion" {
-  rule = aws_cloudwatch_event_rule.document_upload.name
-  arn  = var.ingestion_lambda_arn
+
+# API Gateway 5XX Error Alarm
+resource "aws_cloudwatch_metric_alarm" "api_5xx" {
+  alarm_name          = "${var.name_prefix}-api-5xx-errors"
+  comparison_operator = "GreaterThanOrEqualToThreshold"
+  evaluation_periods  = 1
+  metric_name         = "5XXError"
+  namespace           = "AWS/ApiGateway"
+  period              = 300
+  statistic           = "Sum"
+  threshold           = var.api_5xx_threshold
+  alarm_description   = "Triggered when API Gateway encounters 5XX server errors."
+
+  dimensions = {
+    ApiId = var.api_id
+  }
+
+  alarm_actions = [var.sns_topic_arn]
+  tags          = var.tags
 }
-resource "aws_lambda_permission" "eventbridge" {
-  statement_id  = "AllowEventBridgeIngestion"
-  action        = "lambda:InvokeFunction"
-  function_name = var.ingestion_lambda_name
-  principal     = "events.amazonaws.com"
-  source_arn    = aws_cloudwatch_event_rule.document_upload.arn
+
+# DynamoDB Throttled Requests Alarm
+resource "aws_cloudwatch_metric_alarm" "dynamodb_throttles" {
+  alarm_name          = "${var.name_prefix}-dynamodb-throttles"
+  comparison_operator = "GreaterThanOrEqualToThreshold"
+  evaluation_periods  = 1
+  metric_name         = "ThrottledRequests"
+  namespace           = "AWS/DynamoDB"
+  period              = 300
+  statistic           = "Sum"
+  threshold           = var.dynamodb_throttle_threshold
+  alarm_description   = "Triggered when DynamoDB table requests are throttled."
+
+  dimensions = {
+    TableName = var.dynamodb_table_name
+  }
+
+  alarm_actions = [var.sns_topic_arn]
+  tags          = var.tags
 }

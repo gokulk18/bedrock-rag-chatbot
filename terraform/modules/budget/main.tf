@@ -1,24 +1,33 @@
-variable "name_prefix" { type = string }
-variable "limit_usd" { type = number }
-variable "alert_email" { type = string }
-variable "topic_arn" { type = string }
-resource "aws_sns_topic_subscription" "email" {
-  count     = var.alert_email == "" ? 0 : 1
-  topic_arn = var.topic_arn
-  protocol  = "email"
-  endpoint  = var.alert_email
-}
-resource "aws_budgets_budget" "monthly" {
-  name         = "${var.name_prefix}-monthly"
-  budget_type  = "COST"
-  limit_amount = tostring(var.limit_usd)
-  limit_unit   = "USD"
-  time_unit    = "MONTHLY"
+# ==============================================================================
+# Reusable AWS Budgets Module
+# ==============================================================================
+# Provisions a monthly USD cost budget with automated notifications at 80% and 100%
+# thresholds sent to an SNS topic.
+# ==============================================================================
+
+resource "aws_budgets_budget" "this" {
+  name              = var.budget_name
+  budget_type       = "COST"
+  limit_amount      = tostring(var.limit_amount)
+  limit_unit        = "USD"
+  time_unit         = "MONTHLY"
+  time_period_start = "2026-01-01_00:00"
+
   notification {
     comparison_operator       = "GREATER_THAN"
     threshold                 = 80
     threshold_type            = "PERCENTAGE"
     notification_type         = "ACTUAL"
-    subscriber_sns_topic_arns = [var.topic_arn]
+    subscriber_sns_topic_arns = [var.sns_topic_arn]
   }
+
+  notification {
+    comparison_operator       = "GREATER_THAN"
+    threshold                 = 100
+    threshold_type            = "PERCENTAGE"
+    notification_type         = "ACTUAL"
+    subscriber_sns_topic_arns = [var.sns_topic_arn]
+  }
+
+  tags = var.tags
 }

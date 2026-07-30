@@ -1,56 +1,57 @@
 <!DOCTYPE html>
-<html lang="en" data-theme="light">
-  <head>
-    <meta charset="UTF-8" />
-    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <meta name="description" content="A modern, framework-free chatbot frontend for an Amazon Bedrock RAG experience." />
-    <title>Bedrock RAG Assistant</title>
-    <link rel="stylesheet" href="./styles.css" />
-  </head>
-  <body>
-    <div class="app-shell">
-      <section class="chatbot-card" aria-label="Bedrock knowledge assistant">
-        <header class="chat-header">
-          <div class="brand-area">
-            <div class="brand-icon" aria-hidden="true">
-              <img src="./assets/chatbot-icon.svg" alt="" />
-            </div>
-            <div class="brand-copy">
-              <h1>Bedrock Assistant</h1>
-              <p class="subtitle">Powered by Amazon Bedrock Knowledge Base</p>
-            </div>
-          </div>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Amazon Bedrock RAG Chatbot</title>
+  <link rel="stylesheet" href="css/style.css">
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Outfit:wght@300;400;500;600;700&display=swap" rel="stylesheet">
+</head>
+<body>
+  <div class="chat-container">
+    <header class="chat-header">
+      <div class="header-logo">
+        <svg width="28" height="28" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+          <path d="M12 2L2 7l10 5 10-5-10-5zM2 17l10 5 10-5M2 12l10 5 10-5"/>
+        </svg>
+        <h1>Amazon Bedrock RAG Assistant</h1>
+      </div>
+      <div class="session-badge">
+        <span>Session:</span>
+        <span id="session-id-display">Connecting...</span>
+      </div>
+    </header>
 
-          <div class="header-actions">
-            <div class="status-pill" aria-label="Assistant is online">
-              <span class="status-dot"></span>
-              Online
-            </div>
-            <button id="theme-toggle" class="icon-button" type="button" aria-label="Toggle color theme">
-              <span class="theme-icon" aria-hidden="true">🌙</span>
-              <span class="theme-label">Dark</span>
-            </button>
-            <button id="clear-chat" class="icon-button" type="button">Clear chat</button>
-          </div>
-        </header>
+    <main class="chat-messages" id="chat-messages">
+      <div class="message assistant-message welcome-card">
+        <div class="message-content">
+          <h3>Welcome to the Bedrock RAG Chatbot! 👋</h3>
+          <p>Ask me anything about your uploaded documents. I will synthesize answers using Amazon Bedrock Knowledge Base and provide exact citations.</p>
+        </div>
+      </div>
+    </main>
 
-        <section id="notifications" class="notifications" aria-live="polite"></section>
+    <footer class="chat-input-container">
+      <form id="chat-form" class="chat-form">
+        <input 
+          type="text" 
+          id="user-input" 
+          placeholder="Ask a question about your knowledge base documents..." 
+          autocomplete="off"
+          required
+        >
+        <button type="submit" id="send-btn" aria-label="Send message">
+          <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+            <line x1="22" y1="2" x2="11" y2="13"></line>
+            <polygon points="22 2 15 22 11 13 2 9 22 2"></polygon>
+          </svg>
+        </button>
+      </form>
+    </footer>
+  </div>
 
-        <main class="conversation-panel" id="conversation-panel">
-          <div id="conversation" class="conversation" aria-live="polite"></div>
-        </main>
-
-        <form id="chat-form" class="composer">
-          <label class="sr-only" for="prompt-input">Ask a question</label>
-          <textarea id="prompt-input" rows="1" placeholder="Ask about Terraform, providers, modules, or state..."></textarea>
-          <button id="send-button" class="send-button" type="submit">
-            <span class="send-label">Send</span>
-            <span class="spinner" aria-hidden="true"></span>
-          </button>
-        </form>
-      </section>
-    </div>
-
-    <script type="module" src="./app.js"></script>
-  </body>
+  <script src="js/app.js"></script>
+</body>
 </html>

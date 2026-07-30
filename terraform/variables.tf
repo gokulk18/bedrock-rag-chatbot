@@ -66,24 +66,15 @@ variable "bedrock_model_id" {
   }
 }
 
-variable "budget_limit_usd" {
-  type        = number
-  description = "Monthly budget limit in USD for AWS cost management notifications."
-  default     = 100
-
-  validation {
-    condition     = var.budget_limit_usd > 0
-    error_message = "budget_limit_usd must be greater than 0."
-  }
-}
-
-variable "budget_alert_email" {
+variable "alert_email" {
   type        = string
-  description = "Email address to receive AWS Budget threshold notifications."
+  description = "Email address to receive CloudWatch Alarms and AWS Budget notifications."
   default     = "admin@example.com"
-
-  validation {
-    condition     = can(regex("^[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\\.[a-zA-Z]{2,}$", var.budget_alert_email))
-    error_message = "budget_alert_email must be a valid email address format."
-  }
 }
+
+variable "monthly_budget_limit" {
+  type        = number
+  description = "Monthly cost budget limit in USD."
+  default     = 50
+}
+

@@ -1,0 +1,9 @@
+project_name = "bedrock-rag-chatbot"
+environment  = "dev"
+aws_region   = "us-east-1"
+owner        = "devops-team"
+
+common_tags = {
+  Repository = "https://github.com/example/bedrock-rag-chatbot"
+  CostCenter = "engineering-ai"
+}

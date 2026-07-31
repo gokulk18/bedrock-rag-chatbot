@@ -52,7 +52,10 @@ def handler(event, context):
         history_item = history_res.get('Item', {})
         messages = history_item.get('messages', [])
         
-        model_arn = model_id if model_id.startswith('arn:') else f"arn:aws:bedrock:us-east-1::foundation-model/{model_id}"
+        if model_id.startswith('arn:'):
+            model_arn = model_id
+        else:
+            model_arn = f"arn:aws:bedrock:us-east-1::foundation-model/{model_id}"
         
         rag_kwargs = {
             'input': {'text': prompt},

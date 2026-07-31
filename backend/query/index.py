@@ -53,33 +53,56 @@ def handler(event, context):
         messages = history_item.get('messages', [])
         
         if model_id.startswith('arn:'):
-            model_arn = model_id
-        elif model_id.startswith('us.') or model_id.startswith('eu.') or model_id.startswith('apac.'):
-            account_id = context.invoked_function_arn.split(':')[4] if context and hasattr(context, 'invoked_function_arn') and context.invoked_function_arn else '902664897239'
-            model_arn = f"arn:aws:bedrock:us-east-1:{account_id}:inference-profile/{model_id}"
+            primary_arn = model_id
         else:
-            model_arn = f"arn:aws:bedrock:us-east-1::foundation-model/{model_id}"
-        
-        rag_kwargs = {
-            'input': {'text': prompt},
-            'retrieveAndGenerateConfiguration': {
-                'type': 'KNOWLEDGE_BASE',
-                'knowledgeBaseConfiguration': {
-                    'knowledgeBaseId': knowledge_base_id,
-                    'modelArn': model_arn
+            primary_arn = f"arn:aws:bedrock:us-east-1::foundation-model/{model_id}"
+
+        candidate_arns = [
+            primary_arn,
+            "arn:aws:bedrock:us-east-1::foundation-model/us.anthropic.claude-3-5-sonnet-20241022-v2:0",
+            "arn:aws:bedrock:us-east-1::foundation-model/us.anthropic.claude-3-5-sonnet-20240620-v1:0",
+            "arn:aws:bedrock:us-east-1::foundation-model/amazon.nova-lite-v1:0",
+            "arn:aws:bedrock:us-east-1::foundation-model/amazon.titan-text-express-v1"
+        ]
+
+        response = None
+        last_error = None
+
+        for candidate_arn in candidate_arns:
+            rag_kwargs = {
+                'input': {'text': prompt},
+                'retrieveAndGenerateConfiguration': {
+                    'type': 'KNOWLEDGE_BASE',
+                    'knowledgeBaseConfiguration': {
+                        'knowledgeBaseId': knowledge_base_id,
+                        'modelArn': candidate_arn
+                    }
                 }
             }
-        }
-        
-        try:
-            response = bedrock_agent_runtime_client.retrieve_and_generate(**rag_kwargs)
-        except Exception as e:
-            if 'sessionId' in rag_kwargs and ('cannot be modified' in str(e).lower() or 'validationexception' in str(e).lower()):
-                logger.warning(f"Stale Bedrock session configuration detected; resetting session ID and retrying...")
-                del rag_kwargs['sessionId']
+            if history_item.get('bedrock_session_id'):
+                rag_kwargs['sessionId'] = history_item.get('bedrock_session_id')
+
+            try:
+                logger.info(f"Attempting RetrieveAndGenerate with modelArn: {candidate_arn}")
                 response = bedrock_agent_runtime_client.retrieve_and_generate(**rag_kwargs)
-            else:
-                raise e
+                break
+            except Exception as e:
+                err_str = str(e)
+                logger.warning(f"Failed with {candidate_arn}: {err_str}")
+                last_error = e
+
+                # If session ID was stale, retry without session ID first
+                if 'sessionId' in rag_kwargs and ('cannot be modified' in err_str.lower() or 'validationexception' in err_str.lower()):
+                    try:
+                        del rag_kwargs['sessionId']
+                        response = bedrock_agent_runtime_client.retrieve_and_generate(**rag_kwargs)
+                        break
+                    except Exception as retry_err:
+                        last_error = retry_err
+                        continue
+
+        if not response:
+            raise last_error
         
         answer = response.get('output', {}).get('text', '')
         citations = response.get('citations', [])

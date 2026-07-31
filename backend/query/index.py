@@ -68,10 +68,15 @@ def handler(event, context):
             }
         }
         
-        if history_item.get('bedrock_session_id'):
-            rag_kwargs['sessionId'] = history_item.get('bedrock_session_id')
-
-        response = bedrock_agent_runtime_client.retrieve_and_generate(**rag_kwargs)
+        try:
+            response = bedrock_agent_runtime_client.retrieve_and_generate(**rag_kwargs)
+        except Exception as e:
+            if 'sessionId' in rag_kwargs and ('cannot be modified' in str(e).lower() or 'validationexception' in str(e).lower()):
+                logger.warning(f"Stale Bedrock session configuration detected; resetting session ID and retrying...")
+                del rag_kwargs['sessionId']
+                response = bedrock_agent_runtime_client.retrieve_and_generate(**rag_kwargs)
+            else:
+                raise e
         
         answer = response.get('output', {}).get('text', '')
         citations = response.get('citations', [])

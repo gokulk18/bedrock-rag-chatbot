@@ -163,47 +163,73 @@ jobs:
 
       - name: "Phase 1c: Create Required Vector Index in OpenSearch"
         run: |
+          pip install --quiet opensearch-py requests-aws4auth boto3
+
           COLLECTION_ENDPOINT=$(cd terraform && terraform output -raw opensearch_collection_endpoint)
           echo "Collection endpoint: $COLLECTION_ENDPOINT"
 
-          # Get AWS credentials for signing the request
-          AWS_SIG=$(aws sts get-caller-identity --query Account --output text)
+          python3 - << 'EOF'
+          import os
+          import sys
+          import boto3
+          from opensearchpy import OpenSearch, RequestsHttpConnection, AWSV4SignerAuth
 
-          # Create the vector index required by Bedrock Knowledge Base
-          curl -sS --request PUT \
-            --url "${COLLECTION_ENDPOINT}/bedrock-knowledge-base-default-index" \
-            --header "Content-Type: application/json" \
-            --aws-sigv4 "aws:amz:us-east-1:aoss" \
-            --user "${AWS_ACCESS_KEY_ID}:${AWS_SECRET_ACCESS_KEY}" \
-            -H "x-amz-security-token: ${AWS_SESSION_TOKEN}" \
-            --data '{
+          region = os.environ.get('AWS_REGION', 'us-east-1')
+          session = boto3.Session()
+          credentials = session.get_credentials()
+          auth = AWSV4SignerAuth(credentials, region, 'aoss')
+
+          endpoint = os.popen('cd terraform && terraform output -raw opensearch_collection_endpoint').read().strip()
+          host = endpoint.replace('https://', '')
+
+          print(f"Connecting to OpenSearch Serverless host: {host}")
+
+          client = OpenSearch(
+              hosts=[{'host': host, 'port': 443}],
+              http_auth=auth,
+              use_ssl=True,
+              verify_certs=True,
+              connection_class=RequestsHttpConnection,
+              pool_maxsize=20
+          )
+
+          index_name = 'bedrock-knowledge-base-default-index'
+          index_body = {
               "settings": {
-                "index": {
-                  "knn": true,
-                  "knn.algo_param.ef_search": 512
-                }
+                  "index": {
+                      "knn": True,
+                      "knn.algo_param.ef_search": 512
+                  }
               },
               "mappings": {
-                "properties": {
-                  "bedrock-knowledge-base-default-vector": {
-                    "type": "knn_vector",
-                    "dimension": 1024,
-                    "method": {
-                      "name": "hnsw",
-                      "engine": "faiss",
-                      "space_type": "l2",
-                      "parameters": {
-                        "ef_construction": 512,
-                        "m": 16
-                      }
-                    }
-                  },
-                  "AMAZON_BEDROCK_TEXT_CHUNK": { "type": "text" },
-                  "AMAZON_BEDROCK_METADATA": { "type": "text", "index": false }
-                }
+                  "properties": {
+                      "bedrock-knowledge-base-default-vector": {
+                          "type": "knn_vector",
+                          "dimension": 1024,
+                          "method": {
+                              "name": "hnsw",
+                              "engine": "faiss",
+                              "space_type": "l2",
+                              "parameters": {
+                                  "ef_construction": 512,
+                                  "m": 16
+                              }
+                          }
+                      },
+                      "AMAZON_BEDROCK_TEXT_CHUNK": { "type": "text" },
+                      "AMAZON_BEDROCK_METADATA": { "type": "text", "index": False }
+                  }
               }
-            }' || echo "Index may already exist — continuing."
-          echo "Vector index creation attempted."
+          }
+
+          if not client.indices.exists(index_name):
+              print(f"Creating index '{index_name}'...")
+              res = client.indices.create(index=index_name, body=index_body)
+              print(f"Index creation response: {res}")
+          else:
+              print(f"Index '{index_name}' already exists.")
+          EOF
+          echo "Vector index step completed."
 
       # -----------------------------------------------------------------------
       # Phase 2: Apply all remaining resources now that the index exists.

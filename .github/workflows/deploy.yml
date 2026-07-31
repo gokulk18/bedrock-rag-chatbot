@@ -335,8 +335,11 @@ jobs:
           role-to-assume: ${{ env.FRONTEND_ROLE }}
           aws-region: ${{ env.AWS_REGION }}
 
-      - name: Sync Frontend to S3
+      - name: Inject API Endpoint Config & Sync Frontend to S3
         run: |
+          echo "Injecting API endpoint: ${{ needs.terraform.outputs.chat_endpoint }}"
+          echo "window.CHATBOT_API_ENDPOINT = '${{ needs.terraform.outputs.chat_endpoint }}';" > ./frontend/js/config.js
+          
           aws s3 sync ./frontend \
             s3://${{ needs.terraform.outputs.frontend_bucket }} \
             --delete --no-progress

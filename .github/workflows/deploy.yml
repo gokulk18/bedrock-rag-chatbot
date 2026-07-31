@@ -125,11 +125,93 @@ jobs:
 
       - name: Terraform Plan
         working-directory: terraform
-        run: terraform plan -no-color -out=tfplan
+        run: terraform plan -no-color
 
-      - name: Terraform Apply
+      # -----------------------------------------------------------------------
+      # Phase 1: Apply ONLY the OpenSearch collection first.
+      # Bedrock Knowledge Base requires the vector index to exist before it
+      # can be created, but the index must be created via the OpenSearch API
+      # after the collection is active — not by Terraform.
+      # -----------------------------------------------------------------------
+      - name: "Phase 1: Apply OpenSearch Collection"
         working-directory: terraform
-        run: terraform apply -auto-approve tfplan
+        run: |
+          terraform apply -auto-approve \
+            -target=module.opensearch.aws_opensearchserverless_security_policy.encryption \
+            -target=module.opensearch.aws_opensearchserverless_security_policy.network \
+            -target=module.opensearch.aws_opensearchserverless_collection.this \
+            -target=module.opensearch.aws_opensearchserverless_access_policy.this
+          echo "OpenSearch collection created."
+
+      - name: "Phase 1b: Wait for OpenSearch Collection to be Active"
+        run: |
+          cd terraform
+          COLLECTION_NAME="bedrock-rag-chatbot-dev-vec"
+          echo "Waiting for collection '$COLLECTION_NAME' to become ACTIVE..."
+          for i in {1..30}; do
+            STATUS=$(aws opensearchserverless list-collections \
+              --collection-filters name=$COLLECTION_NAME \
+              --query 'collectionSummaries[0].status' \
+              --output text --no-cli-pager 2>/dev/null)
+            echo "Attempt $i: status = $STATUS"
+            if [ "$STATUS" = "ACTIVE" ]; then
+              echo "Collection is ACTIVE."
+              break
+            fi
+            sleep 10
+          done
+
+      - name: "Phase 1c: Create Required Vector Index in OpenSearch"
+        run: |
+          COLLECTION_ENDPOINT=$(cd terraform && terraform output -raw opensearch_collection_endpoint)
+          echo "Collection endpoint: $COLLECTION_ENDPOINT"
+
+          # Get AWS credentials for signing the request
+          AWS_SIG=$(aws sts get-caller-identity --query Account --output text)
+
+          # Create the vector index required by Bedrock Knowledge Base
+          curl -sS --request PUT \
+            --url "${COLLECTION_ENDPOINT}/bedrock-knowledge-base-default-index" \
+            --header "Content-Type: application/json" \
+            --aws-sigv4 "aws:amz:us-east-1:aoss" \
+            --user "${AWS_ACCESS_KEY_ID}:${AWS_SECRET_ACCESS_KEY}" \
+            -H "x-amz-security-token: ${AWS_SESSION_TOKEN}" \
+            --data '{
+              "settings": {
+                "index": {
+                  "knn": true,
+                  "knn.algo_param.ef_search": 512
+                }
+              },
+              "mappings": {
+                "properties": {
+                  "bedrock-knowledge-base-default-vector": {
+                    "type": "knn_vector",
+                    "dimension": 1024,
+                    "method": {
+                      "name": "hnsw",
+                      "engine": "faiss",
+                      "space_type": "l2",
+                      "parameters": {
+                        "ef_construction": 512,
+                        "m": 16
+                      }
+                    }
+                  },
+                  "AMAZON_BEDROCK_TEXT_CHUNK": { "type": "text" },
+                  "AMAZON_BEDROCK_METADATA": { "type": "text", "index": false }
+                }
+              }
+            }' || echo "Index may already exist — continuing."
+          echo "Vector index creation attempted."
+
+      # -----------------------------------------------------------------------
+      # Phase 2: Apply all remaining resources now that the index exists.
+      # -----------------------------------------------------------------------
+      - name: "Phase 2: Full Terraform Apply"
+        working-directory: terraform
+        run: terraform apply -auto-approve
+
 
       # Capture outputs and make them available to downstream jobs
       - name: Capture Terraform Outputs

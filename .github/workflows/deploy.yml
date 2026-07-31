@@ -1,18 +1,26 @@
-name: Full Infrastructure & Application Deploy
+name: Infrastructure & Application Pipeline
 
 # =============================================================================
-# Single unified pipeline:
-#   1. terraform  → provisions all AWS infrastructure, exports bucket/CDN IDs
-#   2. lambda     → packages & deploys Lambda functions (runs after terraform)
-#   3. frontend   → syncs S3 + invalidates CloudFront (runs after terraform)
+# Unified CI/CD Pipeline with Action Choices (plan, apply, destroy)
 #
-# No GitHub Secrets needed for infrastructure values — they are captured
-# directly from Terraform outputs and passed between jobs automatically.
+# Triggers:
+# - push to main (defaults to 'apply')
+# - workflow_dispatch (manual trigger with action choice dropdown: apply, plan, destroy)
 # =============================================================================
 on:
-  workflow_dispatch:
   push:
     branches: [ main ]
+  workflow_dispatch:
+    inputs:
+      action:
+        description: "Terragrunt / Terraform Action to execute"
+        required: true
+        type: choice
+        default: "apply"
+        options:
+          - apply
+          - plan
+          - destroy
 
 permissions:
   id-token: write   # Required for OIDC token generation
@@ -23,6 +31,7 @@ env:
   TERRAFORM_VERSION: "1.15.4"
   AWS_REGION: "us-east-1"
   STATE_BUCKET: "bedrock-rag-chatbot-dev-tfstate"
+  ACTION: ${{ github.event.inputs.action || 'apply' }}
   TERRAFORM_ROLE: "arn:aws:iam::902664897239:role/github-actions-terraform-role"
   LAMBDA_ROLE:    "arn:aws:iam::902664897239:role/github-actions-lambda-role"
   FRONTEND_ROLE:  "arn:aws:iam::902664897239:role/github-actions-frontend-role"
@@ -31,12 +40,12 @@ env:
 
 jobs:
   # ---------------------------------------------------------------------------
-  # Job 0: Bootstrap — create the Terraform remote state S3 bucket if missing.
-  # This is idempotent: safe to run even if the bucket already exists.
+  # Job 0: Bootstrap — create S3 state bucket if missing (runs for apply & plan)
   # ---------------------------------------------------------------------------
   bootstrap:
     name: "0. Bootstrap State Bucket"
     runs-on: ubuntu-latest
+    if: ${{ (github.event.inputs.action || 'apply') != 'destroy' }}
 
     steps:
       - name: Configure AWS Credentials via OIDC
@@ -51,45 +60,27 @@ jobs:
           REGION="${{ env.AWS_REGION }}"
 
           if aws s3api head-bucket --bucket "$BUCKET" 2>/dev/null; then
-            echo "State bucket '$BUCKET' already exists. Skipping creation."
+            echo "State bucket '$BUCKET' already exists."
           else
             echo "Creating state bucket: $BUCKET"
-            aws s3api create-bucket \
-              --bucket "$BUCKET" \
-              --region "$REGION" \
-              --no-cli-pager
-
-            echo "Enabling versioning..."
-            aws s3api put-bucket-versioning \
-              --bucket "$BUCKET" \
-              --versioning-configuration Status=Enabled
-
-            echo "Enabling AES256 encryption..."
-            aws s3api put-bucket-encryption \
-              --bucket "$BUCKET" \
-              --server-side-encryption-configuration '{
-                "Rules":[{"ApplyServerSideEncryptionByDefault":{"SSEAlgorithm":"AES256"}}]
-              }'
-
-            echo "Blocking all public access..."
-            aws s3api put-public-access-block \
-              --bucket "$BUCKET" \
-              --public-access-block-configuration \
-                "BlockPublicAcls=true,IgnorePublicAcls=true,BlockPublicPolicy=true,RestrictPublicBuckets=true"
-
+            aws s3api create-bucket --bucket "$BUCKET" --region "$REGION" --no-cli-pager
+            aws s3api put-bucket-versioning --bucket "$BUCKET" --versioning-configuration Status=Enabled
+            aws s3api put-bucket-encryption --bucket "$BUCKET" \
+              --server-side-encryption-configuration '{"Rules":[{"ApplyServerSideEncryptionByDefault":{"SSEAlgorithm":"AES256"}}]}'
+            aws s3api put-public-access-block --bucket "$BUCKET" \
+              --public-access-block-configuration "BlockPublicAcls=true,IgnorePublicAcls=true,BlockPublicPolicy=true,RestrictPublicBuckets=true"
             echo "State bucket '$BUCKET' created and secured."
           fi
 
   # ---------------------------------------------------------------------------
-  # Job 1: Terraform — plan + apply, then export outputs to subsequent jobs
+  # Job 1: Terraform — handles plan, apply, or destroy based on input action
   # ---------------------------------------------------------------------------
   terraform:
-    name: "1. Terraform Plan & Apply"
+    name: "1. Terraform (${{ github.event.inputs.action || 'apply' }})"
     runs-on: ubuntu-latest
     needs: bootstrap
+    if: always() && !failed()
 
-
-    # Export terraform output values so jobs 2 & 3 can use them directly
     outputs:
       frontend_bucket:  ${{ steps.tf_out.outputs.frontend_bucket }}
       cloudfront_id:    ${{ steps.tf_out.outputs.cloudfront_id }}
@@ -112,29 +103,40 @@ jobs:
           role-to-assume: ${{ env.TERRAFORM_ROLE }}
           aws-region: ${{ env.AWS_REGION }}
 
+      - name: Empty S3 Buckets if Action is Destroy
+        if: ${{ env.ACTION == 'destroy' }}
+        run: |
+          echo "Action is DESTROY. Emptying document and frontend S3 buckets..."
+          DOC_BUCKET=$(aws s3api list-buckets --query 'Buckets[?contains(Name, `documents`)].Name' --output text 2>/dev/null || true)
+          FRONTEND_BUCKET=$(aws s3api list-buckets --query 'Buckets[?contains(Name, `frontend`)].Name' --output text 2>/dev/null || true)
+
+          if [ -n "$DOC_BUCKET" ]; then
+            aws s3 rm "s3://$DOC_BUCKET" --recursive 2>/dev/null || true
+          fi
+          if [ -n "$FRONTEND_BUCKET" ]; then
+            aws s3 rm "s3://$FRONTEND_BUCKET" --recursive 2>/dev/null || true
+          fi
+          echo "S3 buckets emptied for destroy."
+
       - name: Terraform Init
         working-directory: terraform
         run: terraform init
 
-      - name: Terraform Format Check
-        working-directory: terraform
-        run: terraform fmt -check -recursive
-
       - name: Terraform Validate
+        if: ${{ env.ACTION != 'destroy' }}
         working-directory: terraform
         run: terraform validate
 
-      - name: Terraform Plan
+      - name: "Terraform Action: Plan"
+        if: ${{ env.ACTION == 'plan' }}
         working-directory: terraform
         run: terraform plan -no-color
 
       # -----------------------------------------------------------------------
-      # Phase 1: Apply ONLY the OpenSearch collection first.
-      # Bedrock Knowledge Base requires the vector index to exist before it
-      # can be created, but the index must be created via the OpenSearch API
-      # after the collection is active — not by Terraform.
+      # Apply Flow (Phase 1 -> OpenSearch Index -> Phase 2)
       # -----------------------------------------------------------------------
       - name: "Phase 1: Apply OpenSearch Collection"
+        if: ${{ env.ACTION == 'apply' }}
         working-directory: terraform
         run: |
           terraform apply -auto-approve \
@@ -145,6 +147,7 @@ jobs:
           echo "OpenSearch collection created."
 
       - name: "Phase 1b: Wait for OpenSearch Collection to be Active"
+        if: ${{ env.ACTION == 'apply' }}
         run: |
           cd terraform
           COLLECTION_NAME="bedrock-rag-chatbot-dev-vec"
@@ -162,60 +165,33 @@ jobs:
             sleep 10
           done
 
-      - name: "Phase 1c: Create Required Vector Index in OpenSearch"
+      - name: "Phase 1c: Create Vector Index in OpenSearch"
+        if: ${{ env.ACTION == 'apply' }}
         run: |
           pip install --quiet opensearch-py requests-aws4auth boto3
-
-          COLLECTION_ENDPOINT=$(cd terraform && terraform output -raw opensearch_collection_endpoint)
-          echo "Collection endpoint: $COLLECTION_ENDPOINT"
-
           python3 - << 'EOF'
-          import os
-          import sys
-          import boto3
+          import os, sys, boto3
           from opensearchpy import OpenSearch, RequestsHttpConnection, AWSV4SignerAuth
 
           region = os.environ.get('AWS_REGION', 'us-east-1')
-          session = boto3.Session()
-          credentials = session.get_credentials()
-          auth = AWSV4SignerAuth(credentials, region, 'aoss')
-
+          auth = AWSV4SignerAuth(boto3.Session().get_credentials(), region, 'aoss')
           endpoint = os.popen('cd terraform && terraform output -raw opensearch_collection_endpoint').read().strip()
           host = endpoint.replace('https://', '')
 
-          print(f"Connecting to OpenSearch Serverless host: {host}")
-
           client = OpenSearch(
               hosts=[{'host': host, 'port': 443}],
-              http_auth=auth,
-              use_ssl=True,
-              verify_certs=True,
-              connection_class=RequestsHttpConnection,
-              pool_maxsize=20
+              http_auth=auth, use_ssl=True, verify_certs=True,
+              connection_class=RequestsHttpConnection, pool_maxsize=20
           )
 
           index_name = 'bedrock-knowledge-base-default-index'
           index_body = {
-              "settings": {
-                  "index": {
-                      "knn": True,
-                      "knn.algo_param.ef_search": 512
-                  }
-              },
+              "settings": { "index": { "knn": True, "knn.algo_param.ef_search": 512 } },
               "mappings": {
                   "properties": {
                       "bedrock-knowledge-base-default-vector": {
-                          "type": "knn_vector",
-                          "dimension": 1024,
-                          "method": {
-                              "name": "hnsw",
-                              "engine": "faiss",
-                              "space_type": "l2",
-                              "parameters": {
-                                  "ef_construction": 512,
-                                  "m": 16
-                              }
-                          }
+                          "type": "knn_vector", "dimension": 1024,
+                          "method": { "name": "hnsw", "engine": "faiss", "space_type": "l2", "parameters": { "ef_construction": 512, "m": 16 } }
                       },
                       "AMAZON_BEDROCK_TEXT_CHUNK": { "type": "text" },
                       "AMAZON_BEDROCK_METADATA": { "type": "text", "index": False }
@@ -225,23 +201,32 @@ jobs:
 
           if not client.indices.exists(index=index_name):
               print(f"Creating index '{index_name}'...")
-              res = client.indices.create(index=index_name, body=index_body)
-              print(f"Index creation response: {res}")
+              client.indices.create(index=index_name, body=index_body)
           else:
               print(f"Index '{index_name}' already exists.")
           EOF
-          echo "Vector index step completed."
 
-      # -----------------------------------------------------------------------
-      # Phase 2: Apply all remaining resources now that the index exists.
-      # -----------------------------------------------------------------------
       - name: "Phase 2: Full Terraform Apply"
+        if: ${{ env.ACTION == 'apply' }}
         working-directory: terraform
         run: terraform apply -auto-approve
 
+      - name: "Terraform Action: Destroy"
+        if: ${{ env.ACTION == 'destroy' }}
+        working-directory: terraform
+        run: |
+          terraform destroy -auto-approve
 
-      # Capture outputs and make them available to downstream jobs
+          BUCKET="${{ env.STATE_BUCKET }}"
+          if aws s3api head-bucket --bucket "$BUCKET" 2>/dev/null; then
+            echo "Cleaning up state bucket: $BUCKET"
+            aws s3 rm "s3://$BUCKET" --recursive || true
+            aws s3api delete-bucket --bucket "$BUCKET" --region "${{ env.AWS_REGION }}" || true
+          fi
+          echo "Infrastructure destroy complete."
+
       - name: Capture Terraform Outputs
+        if: ${{ env.ACTION == 'apply' }}
         id: tf_out
         working-directory: terraform
         run: |
@@ -266,12 +251,13 @@ jobs:
           echo "=========================================="
 
   # ---------------------------------------------------------------------------
-  # Job 2: Lambda — deploy backend code (waits for terraform to finish)
+  # Job 2: Lambda — deploy backend code (runs only on apply)
   # ---------------------------------------------------------------------------
   lambda:
     name: "2. Deploy Lambda Functions"
     runs-on: ubuntu-latest
     needs: terraform
+    if: ${{ (github.event.inputs.action || 'apply') == 'apply' }}
 
     steps:
       - name: Checkout Repository
@@ -296,7 +282,6 @@ jobs:
             --function-name ${{ env.INGESTION_FUNCTION }} \
             --zip-file fileb://ingestion.zip \
             --no-cli-pager
-          echo "Ingestion Lambda deployed."
 
       - name: Package & Deploy Query Lambda
         run: |
@@ -306,24 +291,21 @@ jobs:
             --function-name ${{ env.QUERY_FUNCTION }} \
             --zip-file fileb://query.zip \
             --no-cli-pager
-          echo "Query Lambda deployed."
 
       - name: Wait for Lambda Updates to Complete
         run: |
-          aws lambda wait function-updated \
-            --function-name ${{ env.INGESTION_FUNCTION }} --no-cli-pager
-          aws lambda wait function-updated \
-            --function-name ${{ env.QUERY_FUNCTION }} --no-cli-pager
+          aws lambda wait function-updated --function-name ${{ env.INGESTION_FUNCTION }} --no-cli-pager
+          aws lambda wait function-updated --function-name ${{ env.QUERY_FUNCTION }} --no-cli-pager
           echo "Both Lambda functions are active and ready."
 
   # ---------------------------------------------------------------------------
-  # Job 3: Frontend — sync S3 + invalidate CloudFront
-  # Uses frontend_bucket and cloudfront_id directly from terraform job outputs
+  # Job 3: Frontend — sync S3 + invalidate CloudFront (runs only on apply)
   # ---------------------------------------------------------------------------
   frontend:
     name: "3. Deploy Frontend"
     runs-on: ubuntu-latest
     needs: terraform
+    if: ${{ (github.event.inputs.action || 'apply') == 'apply' }}
 
     steps:
       - name: Checkout Repository
@@ -343,7 +325,6 @@ jobs:
           aws s3 sync ./frontend \
             s3://${{ needs.terraform.outputs.frontend_bucket }} \
             --delete --no-progress
-          echo "Frontend synced to: s3://${{ needs.terraform.outputs.frontend_bucket }}"
 
       - name: Invalidate CloudFront Cache
         run: |

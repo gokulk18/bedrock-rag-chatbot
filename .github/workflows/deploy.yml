@@ -22,6 +22,7 @@ env:
   TF_IN_AUTOMATION: "true"
   TERRAFORM_VERSION: "1.15.4"
   AWS_REGION: "us-east-1"
+  STATE_BUCKET: "bedrock-rag-chatbot-dev-tfstate"
   TERRAFORM_ROLE: "arn:aws:iam::902664897239:role/github-actions-terraform-role"
   LAMBDA_ROLE:    "arn:aws:iam::902664897239:role/github-actions-lambda-role"
   FRONTEND_ROLE:  "arn:aws:iam::902664897239:role/github-actions-frontend-role"
@@ -30,11 +31,63 @@ env:
 
 jobs:
   # ---------------------------------------------------------------------------
+  # Job 0: Bootstrap — create the Terraform remote state S3 bucket if missing.
+  # This is idempotent: safe to run even if the bucket already exists.
+  # ---------------------------------------------------------------------------
+  bootstrap:
+    name: "0. Bootstrap State Bucket"
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Configure AWS Credentials via OIDC
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ env.TERRAFORM_ROLE }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Ensure Terraform State Bucket Exists
+        run: |
+          BUCKET="${{ env.STATE_BUCKET }}"
+          REGION="${{ env.AWS_REGION }}"
+
+          if aws s3api head-bucket --bucket "$BUCKET" 2>/dev/null; then
+            echo "State bucket '$BUCKET' already exists. Skipping creation."
+          else
+            echo "Creating state bucket: $BUCKET"
+            aws s3api create-bucket \
+              --bucket "$BUCKET" \
+              --region "$REGION" \
+              --no-cli-pager
+
+            echo "Enabling versioning..."
+            aws s3api put-bucket-versioning \
+              --bucket "$BUCKET" \
+              --versioning-configuration Status=Enabled
+
+            echo "Enabling AES256 encryption..."
+            aws s3api put-bucket-encryption \
+              --bucket "$BUCKET" \
+              --server-side-encryption-configuration '{
+                "Rules":[{"ApplyServerSideEncryptionByDefault":{"SSEAlgorithm":"AES256"}}]
+              }'
+
+            echo "Blocking all public access..."
+            aws s3api put-public-access-block \
+              --bucket "$BUCKET" \
+              --public-access-block-configuration \
+                "BlockPublicAcls=true,IgnorePublicAcls=true,BlockPublicPolicy=true,RestrictPublicBuckets=true"
+
+            echo "State bucket '$BUCKET' created and secured."
+          fi
+
+  # ---------------------------------------------------------------------------
   # Job 1: Terraform — plan + apply, then export outputs to subsequent jobs
   # ---------------------------------------------------------------------------
   terraform:
     name: "1. Terraform Plan & Apply"
     runs-on: ubuntu-latest
+    needs: bootstrap
+
 
     # Export terraform output values so jobs 2 & 3 can use them directly
     outputs:

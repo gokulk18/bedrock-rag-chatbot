@@ -10,8 +10,9 @@
 
 # Primary S3 bucket container
 resource "aws_s3_bucket" "this" {
-  bucket = var.bucket_name
-  tags   = var.tags
+  bucket        = var.bucket_name
+  force_destroy = true
+  tags          = var.tags
 }
 
 # Object versioning configuration

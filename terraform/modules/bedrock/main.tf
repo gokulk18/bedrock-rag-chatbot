@@ -42,8 +42,9 @@ resource "aws_bedrockagent_knowledge_base" "this" {
 # Amazon Bedrock Knowledge Base S3 Data Source
 # ------------------------------------------------------------------------------
 resource "aws_bedrockagent_data_source" "this" {
-  knowledge_base_id = aws_bedrockagent_knowledge_base.this.id
-  name              = var.data_source_name
+  knowledge_base_id    = aws_bedrockagent_knowledge_base.this.id
+  name                 = var.data_source_name
+  data_deletion_policy = "RETAIN"
 
   data_source_configuration {
     type = "S3"

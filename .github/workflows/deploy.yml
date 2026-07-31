@@ -106,17 +106,29 @@ jobs:
       - name: Empty S3 Buckets if Action is Destroy
         if: ${{ env.ACTION == 'destroy' }}
         run: |
-          echo "Action is DESTROY. Emptying document and frontend S3 buckets..."
-          DOC_BUCKET=$(aws s3api list-buckets --query 'Buckets[?contains(Name, `documents`)].Name' --output text 2>/dev/null || true)
-          FRONTEND_BUCKET=$(aws s3api list-buckets --query 'Buckets[?contains(Name, `frontend`)].Name' --output text 2>/dev/null || true)
-
-          if [ -n "$DOC_BUCKET" ]; then
-            aws s3 rm "s3://$DOC_BUCKET" --recursive 2>/dev/null || true
-          fi
-          if [ -n "$FRONTEND_BUCKET" ]; then
-            aws s3 rm "s3://$FRONTEND_BUCKET" --recursive 2>/dev/null || true
-          fi
-          echo "S3 buckets emptied for destroy."
+          echo "Action is DESTROY. Purging all object versions from S3 buckets..."
+          python3 - << 'EOF'
+          import boto3
+          s3 = boto3.client('s3')
+          response = s3.list_buckets()
+          for bucket in response.get('Buckets', []):
+              name = bucket['Name']
+              if 'bedrock-rag-chatbot' in name:
+                  print(f"Purging all versions from bucket: {name}")
+                  paginator = s3.get_paginator('list_object_versions')
+                  try:
+                      for page in paginator.paginate(Bucket=name):
+                          delete_keys = []
+                          for ver in page.get('Versions', []):
+                              delete_keys.append({'Key': ver['Key'], 'VersionId': ver['VersionId']})
+                          for dm in page.get('DeleteMarkers', []):
+                              delete_keys.append({'Key': dm['Key'], 'VersionId': dm['VersionId']})
+                          if delete_keys:
+                              s3.delete_objects(Bucket=name, Delete={'Objects': delete_keys})
+                  except Exception as e:
+                      print(f"Error purging {name}: {e}")
+          EOF
+          echo "All versioned S3 buckets purged."
 
       - name: Terraform Init
         working-directory: terraform

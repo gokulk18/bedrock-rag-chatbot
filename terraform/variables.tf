@@ -58,7 +58,7 @@ variable "common_tags" {
 variable "bedrock_model_id" {
   type        = string
   description = "Amazon Bedrock foundation model ID used for text generation."
-  default     = "us.anthropic.claude-3-5-sonnet-20241022-v2:0"
+  default     = "anthropic.claude-3-haiku-20240307-v1:0"
 
   validation {
     condition     = length(trimspace(var.bedrock_model_id)) > 0

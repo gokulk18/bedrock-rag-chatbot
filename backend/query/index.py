@@ -54,9 +54,6 @@ def handler(event, context):
         
         if model_id.startswith('arn:'):
             model_arn = model_id
-        elif model_id.startswith('us.') or model_id.startswith('eu.') or model_id.startswith('apac.'):
-            account_id = context.invoked_function_arn.split(':')[4] if context and hasattr(context, 'invoked_function_arn') and context.invoked_function_arn else '902664897239'
-            model_arn = f"arn:aws:bedrock:us-east-1:{account_id}:inference-profile/{model_id}"
         else:
             model_arn = f"arn:aws:bedrock:us-east-1::foundation-model/{model_id}"
         

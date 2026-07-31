@@ -33,3 +33,19 @@ terraform {
 }
 EOT
 }
+
+output "github_actions_terraform_role_arn" {
+  description = "ARN of the IAM role for GitHub Actions Terraform CI/CD."
+  value       = aws_iam_role.github_actions_terraform.arn
+}
+
+output "github_actions_lambda_role_arn" {
+  description = "ARN of the IAM role for GitHub Actions Lambda deployment."
+  value       = aws_iam_role.github_actions_lambda.arn
+}
+
+output "github_actions_frontend_role_arn" {
+  description = "ARN of the IAM role for GitHub Actions Frontend deployment."
+  value       = aws_iam_role.github_actions_frontend.arn
+}
+

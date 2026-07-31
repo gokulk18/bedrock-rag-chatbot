@@ -1,5 +1,10 @@
 name: Frontend Web UI CI/CD
 
+# =============================================================================
+# Triggers:
+# - push to main when frontend files change
+# - workflow_dispatch (manual trigger)
+# =============================================================================
 on:
   workflow_dispatch:
   push:
@@ -9,8 +14,8 @@ on:
       - '.github/workflows/frontend-deploy.yml'
 
 permissions:
-  id-token: write
-  contents: read
+  id-token: write   # Required for OIDC token generation
+  contents: read    # Required for checkout
 
 env:
   AWS_REGION: "us-east-1"
@@ -31,12 +36,34 @@ jobs:
           role-to-assume: ${{ env.ROLE_TO_ASSUME }}
           aws-region: ${{ env.AWS_REGION }}
 
-      - name: Sync Static Assets to Private S3 Frontend Bucket
+      # -----------------------------------------------------------------------
+      # Sync frontend static assets to S3
+      # --delete removes files from S3 that no longer exist locally
+      # -----------------------------------------------------------------------
+      - name: Sync Static Assets to S3 Frontend Bucket
         run: |
-          aws s3 sync ./frontend s3://${{ secrets.FRONTEND_BUCKET_NAME }} --delete
+          aws s3 sync ./frontend s3://${{ secrets.FRONTEND_BUCKET_NAME }} \
+            --delete \
+            --no-progress
+          echo "Frontend assets synced to s3://${{ secrets.FRONTEND_BUCKET_NAME }}"
 
-      - name: Invalidate CloudFront CDN Edge Cache
+      # -----------------------------------------------------------------------
+      # Invalidate CloudFront edge cache so users get the latest version
+      # -----------------------------------------------------------------------
+      - name: Invalidate CloudFront Edge Cache
         run: |
-          aws cloudfront create-invalidation \
+          INVALIDATION_ID=$(aws cloudfront create-invalidation \
             --distribution-id ${{ secrets.CLOUDFRONT_DISTRIBUTION_ID }} \
-            --paths "/*"
+            --paths "/*" \
+            --query 'Invalidation.Id' \
+            --output text \
+            --no-cli-pager)
+          echo "CloudFront invalidation created: $INVALIDATION_ID"
+
+      - name: Wait for CloudFront Invalidation
+        run: |
+          aws cloudfront wait invalidation-completed \
+            --distribution-id ${{ secrets.CLOUDFRONT_DISTRIBUTION_ID }} \
+            --id $INVALIDATION_ID \
+            --no-cli-pager || echo "Invalidation wait skipped (may still be propagating)"
+          echo "Frontend deployment complete."

@@ -1,5 +1,11 @@
 name: Terraform Infrastructure CI/CD
 
+# =============================================================================
+# Triggers:
+# - push to main (plan + apply)
+# - pull_request to main (plan only, no apply)
+# - workflow_dispatch (manual: plan or plan+apply)
+# =============================================================================
 on:
   workflow_dispatch:
   push:
@@ -16,27 +22,31 @@ on:
       - '.github/workflows/terraform-ci.yml'
 
 permissions:
-  id-token: write
-  contents: read
+  id-token: write   # Required for OIDC token generation
+  contents: read    # Required for checkout
 
 env:
   TF_IN_AUTOMATION: "true"
+  TERRAFORM_VERSION: "1.15.4"
   AWS_REGION: "us-east-1"
   ROLE_TO_ASSUME: "arn:aws:iam::902664897239:role/github-actions-terraform-role"
 
 jobs:
-  terraform:
-    name: Terraform Quality & Plan/Apply
+  # ---------------------------------------------------------------------------
+  # Job 1: Validate & Plan (runs on every push + PR)
+  # ---------------------------------------------------------------------------
+  plan:
+    name: Terraform Format / Validate / Plan
     runs-on: ubuntu-latest
 
     steps:
       - name: Checkout Repository
         uses: actions/checkout@v4
 
-      - name: Setup Terraform
+      - name: Setup Terraform ${{ env.TERRAFORM_VERSION }}
         uses: hashicorp/setup-terraform@v3
         with:
-          terraform_version: 1.15.0
+          terraform_version: ${{ env.TERRAFORM_VERSION }}
 
       - name: Configure AWS Credentials via OIDC
         uses: aws-actions/configure-aws-credentials@v4
@@ -44,22 +54,63 @@ jobs:
           role-to-assume: ${{ env.ROLE_TO_ASSUME }}
           aws-region: ${{ env.AWS_REGION }}
 
-      - name: Check Terraform Formatting
+      - name: Terraform Format Check
+        working-directory: terraform
         run: terraform fmt -check -recursive
 
-      - name: Initialize Terraform Root
+      - name: Terraform Init
         working-directory: terraform
         run: terraform init
 
-      - name: Validate Terraform Configuration
+      - name: Terraform Validate
         working-directory: terraform
         run: terraform validate
 
       - name: Terraform Plan
         working-directory: terraform
-        run: terraform plan -no-color
+        run: terraform plan -no-color -out=tfplan
+
+      - name: Upload Plan Artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: terraform-plan
+          path: terraform/tfplan
+          retention-days: 1
+
+  # ---------------------------------------------------------------------------
+  # Job 2: Apply (only on push/dispatch to main — never on PRs)
+  # ---------------------------------------------------------------------------
+  apply:
+    name: Terraform Apply
+    runs-on: ubuntu-latest
+    needs: plan
+    if: github.ref == 'refs/heads/main' && github.event_name != 'pull_request'
+
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v4
+
+      - name: Setup Terraform ${{ env.TERRAFORM_VERSION }}
+        uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: ${{ env.TERRAFORM_VERSION }}
+
+      - name: Configure AWS Credentials via OIDC
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ env.ROLE_TO_ASSUME }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Terraform Init
+        working-directory: terraform
+        run: terraform init
+
+      - name: Download Plan Artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: terraform-plan
+          path: terraform
 
       - name: Terraform Apply
-        if: github.ref == 'refs/heads/main' && (github.event_name == 'push' || github.event_name == 'workflow_dispatch')
         working-directory: terraform
-        run: terraform apply -auto-approve
+        run: terraform apply -auto-approve tfplan

@@ -1,5 +1,10 @@
 name: Lambda Application CI/CD
 
+# =============================================================================
+# Triggers:
+# - push to main when backend code changes
+# - workflow_dispatch (manual trigger)
+# =============================================================================
 on:
   workflow_dispatch:
   push:
@@ -9,12 +14,14 @@ on:
       - '.github/workflows/lambda-deploy.yml'
 
 permissions:
-  id-token: write
-  contents: read
+  id-token: write   # Required for OIDC token generation
+  contents: read    # Required for checkout
 
 env:
   AWS_REGION: "us-east-1"
   ROLE_TO_ASSUME: "arn:aws:iam::902664897239:role/github-actions-lambda-role"
+  INGESTION_FUNCTION_NAME: "bedrock-rag-chatbot-dev-ingestion"
+  QUERY_FUNCTION_NAME: "bedrock-rag-chatbot-dev-query"
 
 jobs:
   deploy-backend:
@@ -36,31 +43,66 @@ jobs:
           role-to-assume: ${{ env.ROLE_TO_ASSUME }}
           aws-region: ${{ env.AWS_REGION }}
 
+      # -----------------------------------------------------------------------
+      # Package Lambda ZIPs
+      # -----------------------------------------------------------------------
       - name: Package Ingestion Lambda
         run: |
           cd backend/ingestion
           zip -r ingestion.zip index.py
+          echo "Ingestion ZIP size: $(du -sh ingestion.zip | cut -f1)"
 
       - name: Package Query Lambda
         run: |
           cd backend/query
           zip -r query.zip index.py
+          echo "Query ZIP size: $(du -sh query.zip | cut -f1)"
 
-      - name: Upload Artifacts to S3 Build Bucket
+      # -----------------------------------------------------------------------
+      # Upload Build Artifacts to S3
+      # -----------------------------------------------------------------------
+      - name: Upload Build Artifacts to S3
         run: |
-          aws s3 cp backend/ingestion/ingestion.zip s3://${{ secrets.ARTIFACTS_BUCKET_NAME }}/builds/ingestion-${{ github.sha }}.zip
-          aws s3 cp backend/query/query.zip s3://${{ secrets.ARTIFACTS_BUCKET_NAME }}/builds/query-${{ github.sha }}.zip
+          aws s3 cp backend/ingestion/ingestion.zip \
+            s3://${{ secrets.ARTIFACTS_BUCKET_NAME }}/builds/ingestion-${{ github.sha }}.zip
+          aws s3 cp backend/query/query.zip \
+            s3://${{ secrets.ARTIFACTS_BUCKET_NAME }}/builds/query-${{ github.sha }}.zip
+          echo "Artifacts uploaded with SHA: ${{ github.sha }}"
 
-      - name: Update Ingestion Lambda Code
+      # -----------------------------------------------------------------------
+      # Update Lambda Function Code
+      # -----------------------------------------------------------------------
+      - name: Deploy Ingestion Lambda
         run: |
           aws lambda update-function-code \
-            --function-name bedrock-rag-chatbot-dev-ingestion \
+            --function-name ${{ env.INGESTION_FUNCTION_NAME }} \
             --s3-bucket ${{ secrets.ARTIFACTS_BUCKET_NAME }} \
-            --s3-key builds/ingestion-${{ github.sha }}.zip
+            --s3-key builds/ingestion-${{ github.sha }}.zip \
+            --no-cli-pager
+          echo "Ingestion Lambda updated."
 
-      - name: Update Query Lambda Code
+      - name: Deploy Query Lambda
         run: |
           aws lambda update-function-code \
-            --function-name bedrock-rag-chatbot-dev-query \
+            --function-name ${{ env.QUERY_FUNCTION_NAME }} \
             --s3-bucket ${{ secrets.ARTIFACTS_BUCKET_NAME }} \
-            --s3-key builds/query-${{ github.sha }}.zip
+            --s3-key builds/query-${{ github.sha }}.zip \
+            --no-cli-pager
+          echo "Query Lambda updated."
+
+      # -----------------------------------------------------------------------
+      # Wait for update to complete before confirming
+      # -----------------------------------------------------------------------
+      - name: Wait for Ingestion Lambda Update
+        run: |
+          aws lambda wait function-updated \
+            --function-name ${{ env.INGESTION_FUNCTION_NAME }} \
+            --no-cli-pager
+          echo "Ingestion Lambda ready."
+
+      - name: Wait for Query Lambda Update
+        run: |
+          aws lambda wait function-updated \
+            --function-name ${{ env.QUERY_FUNCTION_NAME }} \
+            --no-cli-pager
+          echo "Query Lambda ready."

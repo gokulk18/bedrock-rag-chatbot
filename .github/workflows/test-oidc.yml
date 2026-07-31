@@ -1,0 +1,32 @@
+name: OIDC Connection Test
+
+on:
+  workflow_dispatch:
+
+permissions:
+  id-token: write
+  contents: read
+
+jobs:
+  test-oidc:
+    name: Test AWS OIDC Authentication
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Print OIDC Token Details
+        run: |
+          echo "Repository:  ${{ github.repository }}"
+          echo "Ref:         ${{ github.ref }}"
+          echo "Event:       ${{ github.event_name }}"
+          echo "Actor:       ${{ github.actor }}"
+          echo "Sub claim will be: repo:${{ github.repository }}:ref:${{ github.ref }}"
+
+      - name: Configure AWS Credentials via OIDC
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: arn:aws:iam::${{ secrets.AWS_ACCOUNT_ID }}:role/github-actions-terraform-role
+          aws-region: us-east-1
+          role-session-name: OIDCTest
+
+      - name: Verify AWS Identity (Confirms OIDC Worked)
+        run: aws sts get-caller-identity

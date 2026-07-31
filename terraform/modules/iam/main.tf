@@ -77,6 +77,7 @@ data "aws_iam_policy_document" "query_lambda" {
     actions = [
       "bedrock:InvokeModel",
       "bedrock:InvokeModelWithResponseStream",
+      "bedrock:GetInferenceProfile",
       "bedrock:Retrieve",
       "bedrock:RetrieveAndGenerate"
     ]

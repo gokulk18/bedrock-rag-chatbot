@@ -103,32 +103,53 @@ jobs:
           role-to-assume: ${{ env.TERRAFORM_ROLE }}
           aws-region: ${{ env.AWS_REGION }}
 
-      - name: Empty S3 Buckets if Action is Destroy
-        if: ${{ env.ACTION == 'destroy' }}
+      - name: Pre-Cleanup Stuck Resources (S3 & Bedrock)
+        if: ${{ env.ACTION == 'destroy' || env.ACTION == 'apply' }}
         run: |
-          echo "Action is DESTROY. Purging all object versions from S3 buckets..."
+          echo "Pre-cleaning any stuck Bedrock resources or S3 objects..."
           python3 - << 'EOF'
           import boto3
-          s3 = boto3.client('s3')
-          response = s3.list_buckets()
-          for bucket in response.get('Buckets', []):
-              name = bucket['Name']
-              if 'bedrock-rag-chatbot' in name:
-                  print(f"Purging all versions from bucket: {name}")
-                  paginator = s3.get_paginator('list_object_versions')
-                  try:
-                      for page in paginator.paginate(Bucket=name):
-                          delete_keys = []
-                          for ver in page.get('Versions', []):
-                              delete_keys.append({'Key': ver['Key'], 'VersionId': ver['VersionId']})
-                          for dm in page.get('DeleteMarkers', []):
-                              delete_keys.append({'Key': dm['Key'], 'VersionId': dm['VersionId']})
-                          if delete_keys:
-                              s3.delete_objects(Bucket=name, Delete={'Objects': delete_keys})
-                  except Exception as e:
-                      print(f"Error purging {name}: {e}")
+          s3 = boto3.client('s3', region_name='us-east-1')
+          bedrock = boto3.client('bedrock-agent', region_name='us-east-1')
+
+          # 1. Purge S3 objects & delete markers for chatbot buckets if destroying
+          if "${{ env.ACTION }}" == "destroy":
+              try:
+                  for bucket in s3.list_buckets().get('Buckets', []):
+                      name = bucket['Name']
+                      if 'bedrock-rag-chatbot' in name:
+                          print(f"Purging all versions from bucket: {name}")
+                          paginator = s3.get_paginator('list_object_versions')
+                          for page in paginator.paginate(Bucket=name):
+                              delete_keys = [{'Key': v['Key'], 'VersionId': v['VersionId']} for v in page.get('Versions', [])]
+                              delete_keys.extend([{'Key': dm['Key'], 'VersionId': dm['VersionId']} for dm in page.get('DeleteMarkers', [])])
+                              if delete_keys:
+                                  s3.delete_objects(Bucket=name, Delete={'Objects': delete_keys})
+              except Exception as e:
+                  print(f"S3 purge notice: {e}")
+
+          # 2. Cleanup stuck DELETE_UNSUCCESSFUL Bedrock Data Sources/KBs
+          try:
+              for kb in bedrock.list_knowledge_bases().get('knowledgeBaseSummaries', []):
+                  kb_id = kb['knowledgeBaseId']
+                  if 'bedrock-rag-chatbot' in kb.get('name', ''):
+                      for ds in bedrock.list_data_sources(knowledgeBaseId=kb_id).get('dataSourceSummaries', []):
+                          ds_id = ds['dataSourceId']
+                          if ds.get('status') == 'DELETE_UNSUCCESSFUL' or "${{ env.ACTION }}" == "destroy":
+                              print(f"Force deleting data source {ds_id} (status: {ds.get('status')})...")
+                              try:
+                                  bedrock.delete_data_source(knowledgeBaseId=kb_id, dataSourceId=ds_id)
+                              except Exception as e:
+                                  print(f"Data source delete notice: {e}")
+                      if "${{ env.ACTION }}" == "destroy":
+                          try:
+                              bedrock.delete_knowledge_base(knowledgeBaseId=kb_id)
+                          except Exception as e:
+                              print(f"KB delete notice: {e}")
+          except Exception as e:
+              print(f"Bedrock cleanup notice: {e}")
           EOF
-          echo "All versioned S3 buckets purged."
+          echo "Pre-cleanup step finished."
 
       - name: Terraform Init
         working-directory: terraform

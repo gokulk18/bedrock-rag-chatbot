@@ -244,19 +244,125 @@ jobs:
         working-directory: terraform
         run: terraform apply -auto-approve
 
-      - name: "Terraform Action: Destroy"
+      - name: "Terraform Action: Destroy (Complete AWS Teardown)"
         if: ${{ env.ACTION == 'destroy' }}
         working-directory: terraform
         run: |
-          terraform destroy -auto-approve
+          echo "Starting complete AWS resource teardown..."
+          python3 - << 'EOF'
+          import boto3, time
 
-          BUCKET="${{ env.STATE_BUCKET }}"
-          if aws s3api head-bucket --bucket "$BUCKET" 2>/dev/null; then
-            echo "Cleaning up state bucket: $BUCKET"
-            aws s3 rm "s3://$BUCKET" --recursive || true
-            aws s3api delete-bucket --bucket "$BUCKET" --region "${{ env.AWS_REGION }}" || true
-          fi
-          echo "Infrastructure destroy complete."
+          region = 'us-east-1'
+          s3 = boto3.client('s3', region_name=region)
+          bedrock = boto3.client('bedrock-agent', region_name=region)
+          aoss = boto3.client('opensearchserverless', region_name=region)
+          apigw = boto3.client('apigatewayv2', region_name=region)
+          lam = boto3.client('lambda', region_name=region)
+          ddb = boto3.client('dynamodb', region_name=region)
+          cw = boto3.client('cloudwatch', region_name=region)
+          sns = boto3.client('sns', region_name=region)
+          cf = boto3.client('cloudfront', region_name=region)
+
+          prefix = 'bedrock-rag-chatbot'
+
+          # 1. Delete S3 Buckets (Purge all versions + delete bucket)
+          try:
+              for b in s3.list_buckets().get('Buckets', []):
+                  name = b['Name']
+                  if prefix in name:
+                      print(f"Purging and deleting S3 bucket: {name}")
+                      paginator = s3.get_paginator('list_object_versions')
+                      for page in paginator.paginate(Bucket=name):
+                          keys = [{'Key': v['Key'], 'VersionId': v['VersionId']} for v in page.get('Versions', [])]
+                          keys.extend([{'Key': dm['Key'], 'VersionId': dm['VersionId']} for dm in page.get('DeleteMarkers', [])])
+                          if keys:
+                              s3.delete_objects(Bucket=name, Delete={'Objects': keys})
+                      s3.delete_bucket(Bucket=name)
+                      print(f"Deleted bucket {name}")
+          except Exception as e:
+              print(f"S3 cleanup: {e}")
+
+          # 2. Delete Bedrock Knowledge Bases & Data Sources
+          try:
+              for kb in bedrock.list_knowledge_bases().get('knowledgeBaseSummaries', []):
+                  kb_id = kb['knowledgeBaseId']
+                  if prefix in kb.get('name', ''):
+                      for ds in bedrock.list_data_sources(knowledgeBaseId=kb_id).get('dataSourceSummaries', []):
+                          print(f"Deleting Bedrock Data Source: {ds['dataSourceId']}")
+                          try: bedrock.delete_data_source(knowledgeBaseId=kb_id, dataSourceId=ds['dataSourceId'])
+                          except Exception: pass
+                      print(f"Deleting Bedrock Knowledge Base: {kb_id}")
+                      try: bedrock.delete_knowledge_base(knowledgeBaseId=kb_id)
+                      except Exception: pass
+          except Exception as e:
+              print(f"Bedrock cleanup: {e}")
+
+          # 3. Delete OpenSearch Serverless Collections & Policies
+          try:
+              for c in aoss.list_collections().get('collectionSummaries', []):
+                  if prefix in c.get('name', ''):
+                      print(f"Deleting OpenSearch collection: {c['name']}")
+                      try: aoss.delete_collection(id=c['id'])
+                      except Exception: pass
+              for p_type in ['encryption', 'network', 'data']:
+                  for p in aoss.list_security_policies(type=p_type).get('securityPolicySummaries', []):
+                      if prefix in p.get('name', ''):
+                          try: aoss.delete_security_policy(type=p_type, name=p['name'])
+                          except Exception: pass
+                  for p in aoss.list_access_policies(type=p_type).get('accessPolicySummaries', []):
+                      if prefix in p.get('name', ''):
+                          try: aoss.delete_access_policy(type=p_type, name=p['name'])
+                          except Exception: pass
+          except Exception as e:
+              print(f"OpenSearch cleanup: {e}")
+
+          # 4. Delete API Gateway APIs
+          try:
+              for api in apigw.get_apis().get('Items', []):
+                  if prefix in api.get('Name', ''):
+                      print(f"Deleting API Gateway: {api['Name']}")
+                      try: apigw.delete_api(ApiId=api['ApiId'])
+                      except Exception: pass
+          except Exception as e:
+              print(f"API Gateway cleanup: {e}")
+
+          # 5. Delete Lambda Functions
+          try:
+              for f in lam.list_functions().get('Functions', []):
+                  if prefix in f.get('FunctionName', ''):
+                      print(f"Deleting Lambda: {f['FunctionName']}")
+                      try: lam.delete_function(FunctionName=f['FunctionName'])
+                      except Exception: pass
+          except Exception as e:
+              print(f"Lambda cleanup: {e}")
+
+          # 6. Delete DynamoDB Tables
+          try:
+              for t in ddb.list_tables().get('TableNames', []):
+                  if prefix in t:
+                      print(f"Deleting DynamoDB table: {t}")
+                      try: ddb.delete_table(TableName=t)
+                      except Exception: pass
+          except Exception as e:
+              print(f"DynamoDB cleanup: {e}")
+
+          # 7. Delete CloudWatch Alarms & SNS Topics
+          try:
+              alarms = [a['AlarmName'] for a in cw.describe_alarms().get('MetricAlarms', []) if prefix in a.get('AlarmName', '')]
+              if alarms:
+                  cw.delete_alarms(AlarmNames=alarms)
+              for t in sns.list_topics().get('Topics', []):
+                  if prefix in t['TopicArn']:
+                      sns.delete_topic(TopicArn=t['TopicArn'])
+          except Exception as e:
+              print(f"Monitoring cleanup: {e}")
+
+          print("All AWS cloud resources purged.")
+          EOF
+
+          # Run terraform destroy to clean up remaining state entries
+          terraform destroy -auto-approve || true
+          echo "Teardown complete."
 
       - name: Capture Terraform Outputs
         if: ${{ env.ACTION == 'apply' }}

@@ -1,0 +1,75 @@
+name: Destroy Infrastructure
+
+# =============================================================================
+# Manual workflow to tear down and destroy all AWS infrastructure resources.
+# Triggers via workflow_dispatch (manual click in GitHub Actions tab).
+# =============================================================================
+on:
+  workflow_dispatch:
+
+permissions:
+  id-token: write   # Required for OIDC token generation
+  contents: read    # Required for checkout
+
+env:
+  TF_IN_AUTOMATION: "true"
+  TERRAFORM_VERSION: "1.15.4"
+  AWS_REGION: "us-east-1"
+  STATE_BUCKET: "bedrock-rag-chatbot-dev-tfstate"
+  TERRAFORM_ROLE: "arn:aws:iam::902664897239:role/github-actions-terraform-role"
+
+jobs:
+  destroy:
+    name: "Destroy All Infrastructure"
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v4
+
+      - name: Setup Terraform ${{ env.TERRAFORM_VERSION }}
+        uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: ${{ env.TERRAFORM_VERSION }}
+          terraform_wrapper: false
+
+      - name: Configure AWS Credentials via OIDC
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ env.TERRAFORM_ROLE }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Empty S3 Buckets (Prerequisite for S3 Deletion)
+        run: |
+          DOC_BUCKET=$(aws s3api list-buckets --query 'Buckets[?contains(Name, `documents`)].Name' --output text 2>/dev/null || true)
+          FRONTEND_BUCKET=$(aws s3api list-buckets --query 'Buckets[?contains(Name, `frontend`)].Name' --output text 2>/dev/null || true)
+
+          if [ -n "$DOC_BUCKET" ]; then
+            echo "Emptying documents bucket: $DOC_BUCKET"
+            aws s3 rm "s3://$DOC_BUCKET" --recursive 2>/dev/null || true
+          fi
+
+          if [ -n "$FRONTEND_BUCKET" ]; then
+            echo "Emptying frontend bucket: $FRONTEND_BUCKET"
+            aws s3 rm "s3://$FRONTEND_BUCKET" --recursive 2>/dev/null || true
+          fi
+          echo "S3 buckets emptied."
+
+      - name: Terraform Init
+        working-directory: terraform
+        run: terraform init
+
+      - name: Terraform Destroy
+        working-directory: terraform
+        run: terraform destroy -auto-approve
+
+      - name: Destroy Terraform State Bucket
+        run: |
+          BUCKET="${{ env.STATE_BUCKET }}"
+          if aws s3api head-bucket --bucket "$BUCKET" 2>/dev/null; then
+            echo "Emptying state bucket: $BUCKET"
+            aws s3 rm "s3://$BUCKET" --recursive || true
+            aws s3api delete-bucket --bucket "$BUCKET" --region "${{ env.AWS_REGION }}" || true
+            echo "State bucket '$BUCKET' deleted."
+          fi
+          echo "Infrastructure destroy completed successfully."

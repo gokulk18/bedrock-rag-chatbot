@@ -65,6 +65,12 @@ variable "s3_bucket_arn" {
   default     = null
 }
 
+variable "enable_s3_trigger" {
+  type        = bool
+  description = "Set to true to create S3 event trigger and permission. Must be a static value (not computed from another resource)."
+  default     = false
+}
+
 variable "tags" {
   type        = map(string)
   description = "Resource tags to apply to the Lambda function and log group."

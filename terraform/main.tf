@@ -145,13 +145,15 @@ module "ingestion_lambda" {
     DATA_SOURCE_ID          = module.bedrock.data_source_id
   }
 
-  s3_bucket_id  = module.documents.bucket_id
-  s3_bucket_arn = module.documents.bucket_arn
+  enable_s3_trigger = true
+  s3_bucket_id      = module.documents.bucket_id
+  s3_bucket_arn     = module.documents.bucket_arn
 
   source_code = file("${path.module}/../backend/ingestion/index.py")
 
   tags = local.common_tags
 }
+
 
 # ------------------------------------------------------------------------------
 # Query Lambda Function

@@ -50,7 +50,7 @@ resource "aws_cloudwatch_log_group" "this" {
 # ------------------------------------------------------------------------------
 
 resource "aws_lambda_permission" "s3" {
-  count         = var.s3_bucket_arn != null ? 1 : 0
+  count         = var.enable_s3_trigger ? 1 : 0
   statement_id  = "AllowS3Invoke"
   action        = "lambda:InvokeFunction"
   function_name = aws_lambda_function.this.function_name
@@ -59,7 +59,7 @@ resource "aws_lambda_permission" "s3" {
 }
 
 resource "aws_s3_bucket_notification" "s3_trigger" {
-  count  = (var.s3_bucket_id != null && var.s3_bucket_arn != null) ? 1 : 0
+  count  = var.enable_s3_trigger ? 1 : 0
   bucket = var.s3_bucket_id
 
   lambda_function {

@@ -120,6 +120,18 @@ data "aws_iam_policy_document" "ingestion_lambda" {
     resources = ["arn:aws:logs:*:*:*"]
   }
 
+  # SSM Parameter Store Read Permission for Knowledge Base ID
+  statement {
+    sid    = "SSMParameterReadAccess"
+    effect = "Allow"
+    actions = [
+      "ssm:GetParameter"
+    ]
+    resources = [
+      "arn:aws:ssm:*:*:parameter/${var.name_prefix}/*"
+    ]
+  }
+
   # S3 Documents Bucket Read Permissions
   statement {
     sid    = "S3DocumentsReadAccess"

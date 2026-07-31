@@ -114,26 +114,25 @@ body {
   margin-bottom: 8px;
 }
 
-.citations-container {
-  margin-top: 14px;
-  padding-top: 12px;
-  border-top: 1px solid var(--border-color);
-  font-size: 0.85rem;
+.sources-pills-container {
+  margin-top: 10px;
+  padding-top: 8px;
+  border-top: 1px solid rgba(255, 255, 255, 0.08);
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
 }
 
-.citations-title {
-  font-weight: 600;
-  color: var(--text-secondary);
-  margin-bottom: 8px;
-}
-
-.citation-card {
-  background: var(--citation-bg);
-  border: 1px solid var(--citation-border);
-  padding: 8px 12px;
-  border-radius: 8px;
-  margin-top: 6px;
-  color: #cbd5e1;
+.source-pill {
+  font-size: 0.75rem;
+  color: #94a3b8;
+  background: rgba(255, 255, 255, 0.06);
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  padding: 3px 10px;
+  border-radius: 12px;
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
 }
 
 .chat-input-container {

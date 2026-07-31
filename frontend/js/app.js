@@ -64,59 +64,30 @@ document.addEventListener('DOMContentLoaded', () => {
     msgDiv.appendChild(contentDiv);
 
     if (citations && citations.length > 0) {
-      const citationsDiv = document.createElement('div');
-      citationsDiv.classList.add('citations-container');
-
-      const title = document.createElement('div');
-      title.classList.add('citations-title');
-      title.textContent = 'Sources & Citations:';
-      citationsDiv.appendChild(title);
-
-      citations.forEach((c, idx) => {
-        const card = document.createElement('div');
-        card.classList.add('citation-card');
-
-        let text = '';
-        let docName = '';
-
+      const sourcesSet = new Set();
+      citations.forEach(c => {
         if (c.retrievedReferences && c.retrievedReferences.length > 0) {
           const ref = c.retrievedReferences[0];
-          text = ref.content?.text || '';
           if (ref.location?.s3Location?.uri) {
-            const uriParts = ref.location.s3Location.uri.split('/');
-            docName = decodeURIComponent(uriParts[uriParts.length - 1]);
+            const filename = decodeURIComponent(ref.location.s3Location.uri.split('/').pop());
+            if (filename) sourcesSet.add(filename);
           }
         }
-
-        if (!text && c.generatedResponsePart?.textResponsePart?.text) {
-          text = c.generatedResponsePart.textResponsePart.text;
-        }
-
-        if (!text) {
-          text = 'Document passage referenced';
-        }
-
-        const docLabel = docName ? `📄 Source: ${docName}` : `[Citation ${idx + 1}]`;
-        
-        const labelElem = document.createElement('div');
-        labelElem.style.fontWeight = '600';
-        labelElem.style.fontSize = '0.85rem';
-        labelElem.style.color = '#a5b4fc';
-        labelElem.style.marginBottom = '4px';
-        labelElem.textContent = docLabel;
-
-        const textElem = document.createElement('div');
-        textElem.style.fontSize = '0.9rem';
-        textElem.style.color = '#e2e8f0';
-        textElem.style.lineHeight = '1.4';
-        textElem.textContent = text;
-
-        card.appendChild(labelElem);
-        card.appendChild(textElem);
-        citationsDiv.appendChild(card);
       });
 
-      msgDiv.appendChild(citationsDiv);
+      if (sourcesSet.size > 0) {
+        const sourcesContainer = document.createElement('div');
+        sourcesContainer.classList.add('sources-pills-container');
+
+        sourcesSet.forEach(docName => {
+          const pill = document.createElement('span');
+          pill.classList.add('source-pill');
+          pill.textContent = `📄 ${docName}`;
+          sourcesContainer.appendChild(pill);
+        });
+
+        msgDiv.appendChild(sourcesContainer);
+      }
     }
 
     chatMessages.appendChild(msgDiv);

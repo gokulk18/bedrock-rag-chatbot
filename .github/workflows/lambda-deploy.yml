@@ -1,0 +1,66 @@
+name: Lambda Application CI/CD
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [ main ]
+    paths:
+      - 'backend/**'
+      - '.github/workflows/lambda-deploy.yml'
+
+permissions:
+  id-token: write
+  contents: read
+
+env:
+  AWS_REGION: "us-east-1"
+  ROLE_TO_ASSUME: "arn:aws:iam::902664897239:role/github-actions-lambda-role"
+
+jobs:
+  deploy-backend:
+    name: Package & Deploy Python Lambdas
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v4
+
+      - name: Setup Python 3.12
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Configure AWS Credentials via OIDC
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ env.ROLE_TO_ASSUME }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Package Ingestion Lambda
+        run: |
+          cd backend/ingestion
+          zip -r ingestion.zip index.py
+
+      - name: Package Query Lambda
+        run: |
+          cd backend/query
+          zip -r query.zip index.py
+
+      - name: Upload Artifacts to S3 Build Bucket
+        run: |
+          aws s3 cp backend/ingestion/ingestion.zip s3://${{ secrets.ARTIFACTS_BUCKET_NAME }}/builds/ingestion-${{ github.sha }}.zip
+          aws s3 cp backend/query/query.zip s3://${{ secrets.ARTIFACTS_BUCKET_NAME }}/builds/query-${{ github.sha }}.zip
+
+      - name: Update Ingestion Lambda Code
+        run: |
+          aws lambda update-function-code \
+            --function-name bedrock-rag-chatbot-dev-ingestion \
+            --s3-bucket ${{ secrets.ARTIFACTS_BUCKET_NAME }} \
+            --s3-key builds/ingestion-${{ github.sha }}.zip
+
+      - name: Update Query Lambda Code
+        run: |
+          aws lambda update-function-code \
+            --function-name bedrock-rag-chatbot-dev-query \
+            --s3-bucket ${{ secrets.ARTIFACTS_BUCKET_NAME }} \
+            --s3-key builds/query-${{ github.sha }}.zip

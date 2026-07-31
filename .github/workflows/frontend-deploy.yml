@@ -1,0 +1,42 @@
+name: Frontend Web UI CI/CD
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [ main ]
+    paths:
+      - 'frontend/**'
+      - '.github/workflows/frontend-deploy.yml'
+
+permissions:
+  id-token: write
+  contents: read
+
+env:
+  AWS_REGION: "us-east-1"
+  ROLE_TO_ASSUME: "arn:aws:iam::902664897239:role/github-actions-frontend-role"
+
+jobs:
+  deploy-frontend:
+    name: Sync S3 & Invalidate CloudFront
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v4
+
+      - name: Configure AWS Credentials via OIDC
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ env.ROLE_TO_ASSUME }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Sync Static Assets to Private S3 Frontend Bucket
+        run: |
+          aws s3 sync ./frontend s3://${{ secrets.FRONTEND_BUCKET_NAME }} --delete
+
+      - name: Invalidate CloudFront CDN Edge Cache
+        run: |
+          aws cloudfront create-invalidation \
+            --distribution-id ${{ secrets.CLOUDFRONT_DISTRIBUTION_ID }} \
+            --paths "/*"

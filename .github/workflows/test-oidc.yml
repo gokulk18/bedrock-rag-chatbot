@@ -19,8 +19,18 @@ jobs:
     runs-on: ubuntu-latest
 
     steps:
-      - name: Checkout Repository
-        uses: actions/checkout@v4
+      - name: Decode OIDC Token to See Exact Sub Claim
+        run: |
+          echo "Fetching OIDC token from GitHub..."
+          OIDC_TOKEN=$(curl -s \
+            -H "Authorization: bearer $ACTIONS_ID_TOKEN_REQUEST_TOKEN" \
+            "${ACTIONS_ID_TOKEN_REQUEST_URL}&audience=sts.amazonaws.com" \
+            | jq -r '.value')
+          echo ""
+          echo "=== OIDC Token Claims (decoded) ==="
+          echo $OIDC_TOKEN | cut -d'.' -f2 | base64 -d 2>/dev/null | python3 -m json.tool || \
+          echo $OIDC_TOKEN | cut -d'.' -f2 | base64 --decode 2>/dev/null | python3 -m json.tool
+          echo "=== End of Claims ==="
 
       - name: Configure AWS Credentials via OIDC
         uses: aws-actions/configure-aws-credentials@v4
@@ -30,3 +40,4 @@ jobs:
 
       - name: Verify AWS Identity (Confirms OIDC Worked)
         run: aws sts get-caller-identity
+

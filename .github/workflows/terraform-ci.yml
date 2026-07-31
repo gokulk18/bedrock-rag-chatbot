@@ -1,11 +1,5 @@
 name: Terraform Infrastructure CI/CD
 
-# =============================================================================
-# Triggers:
-# - push to main (plan + apply)
-# - pull_request to main (plan only, no apply)
-# - workflow_dispatch (manual: plan or plan+apply)
-# =============================================================================
 on:
   workflow_dispatch:
   push:
@@ -47,6 +41,7 @@ jobs:
         uses: hashicorp/setup-terraform@v3
         with:
           terraform_version: ${{ env.TERRAFORM_VERSION }}
+          terraform_wrapper: false
 
       - name: Configure AWS Credentials via OIDC
         uses: aws-actions/configure-aws-credentials@v4
@@ -94,6 +89,7 @@ jobs:
         uses: hashicorp/setup-terraform@v3
         with:
           terraform_version: ${{ env.TERRAFORM_VERSION }}
+          terraform_wrapper: false
 
       - name: Configure AWS Credentials via OIDC
         uses: aws-actions/configure-aws-credentials@v4
@@ -114,3 +110,40 @@ jobs:
       - name: Terraform Apply
         working-directory: terraform
         run: terraform apply -auto-approve tfplan
+
+      # -----------------------------------------------------------------------
+      # After apply: extract Terraform outputs and push them to GitHub Secrets
+      # automatically. This means destroy+apply never requires manual updates.
+      # -----------------------------------------------------------------------
+      - name: Extract Terraform Outputs
+        id: tf_outputs
+        working-directory: terraform
+        run: |
+          echo "Extracting Terraform outputs..."
+          FRONTEND_BUCKET=$(terraform output -raw frontend_bucket_name)
+          CLOUDFRONT_ID=$(terraform output -raw cloudfront_distribution_id)
+          CHAT_URL=$(terraform output -raw chat_endpoint_url)
+          echo "frontend_bucket=$FRONTEND_BUCKET" >> $GITHUB_OUTPUT
+          echo "cloudfront_id=$CLOUDFRONT_ID" >> $GITHUB_OUTPUT
+          echo "chat_url=$CHAT_URL" >> $GITHUB_OUTPUT
+          echo ""
+          echo "=== Deployed Infrastructure ==="
+          echo "Frontend Bucket:         $FRONTEND_BUCKET"
+          echo "CloudFront ID:           $CLOUDFRONT_ID"
+          echo "Chat API Endpoint:       $CHAT_URL"
+
+      - name: Auto-Update GitHub Secrets from Terraform Outputs
+        env:
+          GH_TOKEN: ${{ secrets.GH_PAT }}
+        run: |
+          echo "Updating GitHub Secrets with latest Terraform outputs..."
+          gh secret set FRONTEND_BUCKET_NAME \
+            --body "${{ steps.tf_outputs.outputs.frontend_bucket }}" \
+            --repo "${{ github.repository }}"
+          gh secret set CLOUDFRONT_DISTRIBUTION_ID \
+            --body "${{ steps.tf_outputs.outputs.cloudfront_id }}" \
+            --repo "${{ github.repository }}"
+          echo "GitHub Secrets updated successfully."
+          echo ""
+          echo "FRONTEND_BUCKET_NAME    → ${{ steps.tf_outputs.outputs.frontend_bucket }}"
+          echo "CLOUDFRONT_DISTRIBUTION_ID → ${{ steps.tf_outputs.outputs.cloudfront_id }}"

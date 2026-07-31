@@ -43,14 +43,17 @@ data "aws_iam_policy_document" "query_lambda" {
     resources = ["arn:aws:logs:*:*:*"]
   }
 
-  # SSM Parameter Store Permission (Read Model ID)
+  # SSM Parameter Store Permission (Read Model ID & KB ID)
   statement {
     sid    = "SSMParameterReadAccess"
     effect = "Allow"
     actions = [
       "ssm:GetParameter"
     ]
-    resources = [var.ssm_parameter_arn]
+    resources = [
+      "arn:aws:ssm:*:*:parameter/${var.name_prefix}/*",
+      var.ssm_parameter_arn
+    ]
   }
 
   # DynamoDB Conversation History Permissions
@@ -67,13 +70,15 @@ data "aws_iam_policy_document" "query_lambda" {
     resources = [var.dynamodb_table_arn]
   }
 
-  # Amazon Bedrock Model Invocation Permissions
+  # Amazon Bedrock Model Invocation & RAG Permissions
   statement {
     sid    = "BedrockModelInvocationAccess"
     effect = "Allow"
     actions = [
       "bedrock:InvokeModel",
-      "bedrock:InvokeModelWithResponseStream"
+      "bedrock:InvokeModelWithResponseStream",
+      "bedrock:Retrieve",
+      "bedrock:RetrieveAndGenerate"
     ]
     resources = ["*"]
   }

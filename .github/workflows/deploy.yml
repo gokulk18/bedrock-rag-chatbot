@@ -103,22 +103,26 @@ jobs:
           role-to-assume: ${{ env.TERRAFORM_ROLE }}
           aws-region: ${{ env.AWS_REGION }}
 
-      - name: Pre-Cleanup Stuck Resources (S3 & Bedrock)
+      - name: Pre-Cleanup Stuck Resources (S3, Bedrock, OpenSearch & IAM)
         if: ${{ env.ACTION == 'destroy' || env.ACTION == 'apply' }}
         run: |
-          echo "Pre-cleaning any stuck Bedrock resources or S3 objects..."
+          echo "Pre-cleaning any leftover AWS resources..."
           python3 - << 'EOF'
           import boto3
-          s3 = boto3.client('s3', region_name='us-east-1')
-          bedrock = boto3.client('bedrock-agent', region_name='us-east-1')
+          region = 'us-east-1'
+          s3 = boto3.client('s3', region_name=region)
+          bedrock = boto3.client('bedrock-agent', region_name=region)
+          aoss = boto3.client('opensearchserverless', region_name=region)
+          iam = boto3.client('iam')
+          prefix = 'bedrock-rag-chatbot'
 
-          # 1. Purge S3 objects & delete markers for chatbot buckets if destroying
+          # 1. Purge S3 objects if destroying
           if "${{ env.ACTION }}" == "destroy":
               try:
                   for bucket in s3.list_buckets().get('Buckets', []):
                       name = bucket['Name']
-                      if 'bedrock-rag-chatbot' in name:
-                          print(f"Purging all versions from bucket: {name}")
+                      if prefix in name:
+                          print(f"Purging S3 bucket: {name}")
                           paginator = s3.get_paginator('list_object_versions')
                           for page in paginator.paginate(Bucket=name):
                               delete_keys = [{'Key': v['Key'], 'VersionId': v['VersionId']} for v in page.get('Versions', [])]
@@ -128,28 +132,56 @@ jobs:
               except Exception as e:
                   print(f"S3 purge notice: {e}")
 
-          # 2. Cleanup stuck DELETE_UNSUCCESSFUL Bedrock Data Sources/KBs
+          # 2. Cleanup stuck Bedrock Data Sources/KBs
           try:
               for kb in bedrock.list_knowledge_bases().get('knowledgeBaseSummaries', []):
                   kb_id = kb['knowledgeBaseId']
-                  if 'bedrock-rag-chatbot' in kb.get('name', ''):
+                  if prefix in kb.get('name', ''):
                       for ds in bedrock.list_data_sources(knowledgeBaseId=kb_id).get('dataSourceSummaries', []):
                           ds_id = ds['dataSourceId']
                           if ds.get('status') == 'DELETE_UNSUCCESSFUL' or "${{ env.ACTION }}" == "destroy":
-                              print(f"Force deleting data source {ds_id} (status: {ds.get('status')})...")
-                              try:
-                                  bedrock.delete_data_source(knowledgeBaseId=kb_id, dataSourceId=ds_id)
-                              except Exception as e:
-                                  print(f"Data source delete notice: {e}")
+                              print(f"Force deleting data source {ds_id}...")
+                              try: bedrock.delete_data_source(knowledgeBaseId=kb_id, dataSourceId=ds_id)
+                              except Exception: pass
                       if "${{ env.ACTION }}" == "destroy":
-                          try:
-                              bedrock.delete_knowledge_base(knowledgeBaseId=kb_id)
-                          except Exception as e:
-                              print(f"KB delete notice: {e}")
+                          try: bedrock.delete_knowledge_base(knowledgeBaseId=kb_id)
+                          except Exception: pass
           except Exception as e:
               print(f"Bedrock cleanup notice: {e}")
+
+          # 3. Cleanup leftover IAM Roles & Policies if destroying
+          if "${{ env.ACTION }}" == "destroy":
+              try:
+                  for role in iam.list_roles().get('Roles', []):
+                      rname = role['RoleName']
+                      if prefix in rname:
+                          print(f"Deleting leftover IAM Role: {rname}")
+                          for p in iam.list_attached_role_policies(RoleName=rname).get('AttachedPolicies', []):
+                              try: iam.detach_role_policy(RoleName=rname, PolicyArn=p['PolicyArn'])
+                              except Exception: pass
+                          try: iam.delete_role(RoleName=rname)
+                          except Exception: pass
+                  for pol in iam.list_policies(Scope='Local').get('Policies', []):
+                      pname = pol['PolicyName']
+                      if prefix in pname:
+                          print(f"Deleting leftover IAM Policy: {pname}")
+                          try: iam.delete_policy(PolicyArn=pol['Arn'])
+                          except Exception: pass
+              except Exception as e:
+                  print(f"IAM cleanup notice: {e}")
+
+          # 4. Cleanup leftover OpenSearch Policies if destroying
+          if "${{ env.ACTION }}" == "destroy":
+              try:
+                  for p_type in ['encryption', 'network', 'data']:
+                      for p in aoss.list_security_policies(type=p_type).get('securityPolicySummaries', []):
+                          if prefix in p.get('name', ''):
+                              try: aoss.delete_security_policy(type=p_type, name=p['name'])
+                              except Exception: pass
+              except Exception as e:
+                  print(f"OpenSearch policy cleanup notice: {e}")
           EOF
-          echo "Pre-cleanup step finished."
+          echo "Pre-cleanup finished."
 
       - name: Terraform Init
         working-directory: terraform

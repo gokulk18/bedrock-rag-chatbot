@@ -93,6 +93,7 @@ jobs:
     outputs:
       frontend_bucket:  ${{ steps.tf_out.outputs.frontend_bucket }}
       cloudfront_id:    ${{ steps.tf_out.outputs.cloudfront_id }}
+      cloudfront_domain: ${{ steps.tf_out.outputs.cloudfront_domain }}
       chat_endpoint:    ${{ steps.tf_out.outputs.chat_endpoint }}
 
     steps:
@@ -246,10 +247,12 @@ jobs:
         run: |
           FRONTEND_BUCKET=$(terraform output -raw frontend_bucket_name)
           CLOUDFRONT_ID=$(terraform output -raw cloudfront_distribution_id)
+          CLOUDFRONT_DOMAIN=$(terraform output -raw cloudfront_domain_name)
           CHAT_ENDPOINT=$(terraform output -raw chat_endpoint_url)
 
           echo "frontend_bucket=$FRONTEND_BUCKET" >> $GITHUB_OUTPUT
           echo "cloudfront_id=$CLOUDFRONT_ID"     >> $GITHUB_OUTPUT
+          echo "cloudfront_domain=$CLOUDFRONT_DOMAIN" >> $GITHUB_OUTPUT
           echo "chat_endpoint=$CHAT_ENDPOINT"     >> $GITHUB_OUTPUT
 
           echo ""
@@ -258,6 +261,7 @@ jobs:
           echo "=========================================="
           echo "Frontend S3 Bucket : $FRONTEND_BUCKET"
           echo "CloudFront ID      : $CLOUDFRONT_ID"
+          echo "CloudFront Domain  : https://$CLOUDFRONT_DOMAIN"
           echo "Chat API Endpoint  : $CHAT_ENDPOINT"
           echo "=========================================="
 
@@ -347,4 +351,8 @@ jobs:
             --output text \
             --no-cli-pager)
           echo "CloudFront cache invalidated: $INVALIDATION_ID"
-          echo "Your app is live at: https://${{ needs.terraform.outputs.chat_endpoint }}"
+          echo ""
+          echo "=========================================================="
+          echo "🚀 Web Chatbot UI URL : https://${{ needs.terraform.outputs.cloudfront_domain }}"
+          echo "📡 API Gateway Endpoint: ${{ needs.terraform.outputs.chat_endpoint }}"
+          echo "=========================================================="

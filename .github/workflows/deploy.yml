@@ -1,33 +1,17 @@
 name: Infrastructure & Application Pipeline
 
-# =============================================================================
-# Manual workflow dispatch with action dropdown: plan | apply | destroy
-#
-#  plan    → validate + show what Terraform would change (no mutations)
-#  apply   → deploy infrastructure, then Lambda & frontend in parallel
-#  destroy → tear down all infrastructure (Terraform first, then cleanup)
-# =============================================================================
-
 on:
   workflow_dispatch:
     inputs:
       action:
-        description: "Terraform action to execute"
-        required: true
+        description: "Terraform action to run"
         type: choice
+        options: [plan, apply, destroy]
         default: plan
-        options:
-          - plan
-          - apply
-          - destroy
 
 concurrency:
-  group: terraform-${{ github.ref }}-${{ github.event.inputs.action }}
+  group: terraform-${{ github.ref }}
   cancel-in-progress: false
-
-permissions:
-  id-token: write   # Required for OIDC token generation
-  contents: read    # Required for checkout
 
 env:
   TF_IN_AUTOMATION:   "true"
@@ -43,25 +27,31 @@ env:
 
 jobs:
 
-  # ---------------------------------------------------------------------------
-  # plan — show what Terraform would do (no infrastructure changes)
-  # ---------------------------------------------------------------------------
   plan:
-    name: "Terraform Plan"
+    name: Terraform Plan
     runs-on: ubuntu-latest
-    if: ${{ github.event.inputs.action == 'plan' }}
+    permissions:
+      contents: read
+      id-token: write
+    defaults:
+      run:
+        working-directory: terraform
 
     steps:
-      # Checkout MUST be first — GitHub needs the repo to load local composite actions
-      - name: Checkout Repository
+      - name: Checkout repository
         uses: actions/checkout@v4
 
-      - name: Setup (Terraform + AWS auth)
-        uses: ./.github/actions/terraform-setup
+      - name: Set up Terraform
+        uses: hashicorp/setup-terraform@v3
         with:
-          terraform-version: ${{ env.TERRAFORM_VERSION }}
-          aws-role-arn:      ${{ env.TERRAFORM_ROLE }}
-          aws-region:        ${{ env.AWS_REGION }}
+          terraform_version: ${{ env.TERRAFORM_VERSION }}
+          terraform_wrapper: false
+
+      - name: Configure AWS credentials (OIDC)
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ env.TERRAFORM_ROLE }}
+          aws-region:     ${{ env.AWS_REGION }}
 
       - name: Terraform Init
         uses: ./.github/actions/terraform-init
@@ -74,15 +64,20 @@ jobs:
         uses: ./.github/actions/terraform-plan
         with:
           working-directory: terraform
-          destroy:           "false"
+          destroy: ${{ github.event.inputs.action == 'destroy' }}
 
-  # ---------------------------------------------------------------------------
-  # apply — provision / update all infrastructure
-  # ---------------------------------------------------------------------------
   apply:
-    name: "Terraform Apply"
+    name: Terraform Apply
+    needs: plan
+    if: ${{ github.event.inputs.action != 'plan' }}
     runs-on: ubuntu-latest
-    if: ${{ github.event.inputs.action == 'apply' }}
+    environment: production
+    permissions:
+      contents: read
+      id-token: write
+    defaults:
+      run:
+        working-directory: terraform
 
     outputs:
       frontend_bucket:   ${{ steps.tf_apply.outputs.frontend_bucket }}
@@ -91,16 +86,20 @@ jobs:
       chat_endpoint:     ${{ steps.tf_apply.outputs.chat_endpoint }}
 
     steps:
-      # Checkout MUST be first — GitHub needs the repo to load local composite actions
-      - name: Checkout Repository
+      - name: Checkout repository
         uses: actions/checkout@v4
 
-      - name: Setup (Terraform + AWS auth)
-        uses: ./.github/actions/terraform-setup
+      - name: Set up Terraform
+        uses: hashicorp/setup-terraform@v3
         with:
-          terraform-version: ${{ env.TERRAFORM_VERSION }}
-          aws-role-arn:      ${{ env.TERRAFORM_ROLE }}
-          aws-region:        ${{ env.AWS_REGION }}
+          terraform_version: ${{ env.TERRAFORM_VERSION }}
+          terraform_wrapper: false
+
+      - name: Configure AWS credentials (OIDC)
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ env.TERRAFORM_ROLE }}
+          aws-region:     ${{ env.AWS_REGION }}
 
       - name: Terraform Init
         uses: ./.github/actions/terraform-init
@@ -111,43 +110,53 @@ jobs:
 
       - name: Terraform Apply
         id: tf_apply
+        if: ${{ github.event.inputs.action == 'apply' }}
         uses: ./.github/actions/terraform-apply
         with:
           working-directory: terraform
           aws-region:        ${{ env.AWS_REGION }}
 
-  # ---------------------------------------------------------------------------
-  # lambda — deploy Lambda code (runs after apply, in parallel with frontend)
-  # ---------------------------------------------------------------------------
+      - name: Terraform Destroy
+        if: ${{ github.event.inputs.action == 'destroy' }}
+        uses: ./.github/actions/terraform-destroy
+        with:
+          working-directory: terraform
+          aws-region:        ${{ env.AWS_REGION }}
+          state-bucket:      ${{ env.STATE_BUCKET }}
+          resource-prefix:   ${{ env.RESOURCE_PREFIX }}
+
   lambda:
-    name: "Deploy Lambda Functions"
-    runs-on: ubuntu-latest
+    name: Deploy Lambda Functions
     needs: apply
     if: ${{ github.event.inputs.action == 'apply' }}
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      id-token: write
 
     steps:
-      - name: Checkout Repository
+      - name: Checkout repository
         uses: actions/checkout@v4
 
       - name: Deploy Lambda Functions
         uses: ./.github/actions/lambda-deploy
         with:
-          aws-role-arn:        ${{ env.LAMBDA_ROLE }}
-          aws-region:          ${{ env.AWS_REGION }}
-          ingestion-function:  ${{ env.INGESTION_FUNCTION }}
-          query-function:      ${{ env.QUERY_FUNCTION }}
+          aws-role-arn:       ${{ env.LAMBDA_ROLE }}
+          aws-region:         ${{ env.AWS_REGION }}
+          ingestion-function: ${{ env.INGESTION_FUNCTION }}
+          query-function:     ${{ env.QUERY_FUNCTION }}
 
-  # ---------------------------------------------------------------------------
-  # frontend — sync UI assets to S3 + invalidate CloudFront (parallel with lambda)
-  # ---------------------------------------------------------------------------
   frontend:
-    name: "Deploy Frontend"
-    runs-on: ubuntu-latest
+    name: Deploy Frontend
     needs: apply
     if: ${{ github.event.inputs.action == 'apply' }}
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      id-token: write
 
     steps:
-      - name: Checkout Repository
+      - name: Checkout repository
         uses: actions/checkout@v4
 
       - name: Deploy Frontend
@@ -159,38 +168,3 @@ jobs:
           cloudfront-id:     ${{ needs.apply.outputs.cloudfront_id }}
           cloudfront-domain: ${{ needs.apply.outputs.cloudfront_domain }}
           chat-endpoint:     ${{ needs.apply.outputs.chat_endpoint }}
-
-  # ---------------------------------------------------------------------------
-  # destroy — tear down all infrastructure (correct order: tf destroy → cleanup)
-  # ---------------------------------------------------------------------------
-  destroy:
-    name: "Terraform Destroy"
-    runs-on: ubuntu-latest
-    if: ${{ github.event.inputs.action == 'destroy' }}
-
-    steps:
-      # Checkout MUST be first — GitHub needs the repo to load local composite actions
-      - name: Checkout Repository
-        uses: actions/checkout@v4
-
-      - name: Setup (Terraform + AWS auth)
-        uses: ./.github/actions/terraform-setup
-        with:
-          terraform-version: ${{ env.TERRAFORM_VERSION }}
-          aws-role-arn:      ${{ env.TERRAFORM_ROLE }}
-          aws-region:        ${{ env.AWS_REGION }}
-
-      - name: Terraform Init
-        uses: ./.github/actions/terraform-init
-        with:
-          working-directory: terraform
-          state-bucket:      ${{ env.STATE_BUCKET }}
-          aws-region:        ${{ env.AWS_REGION }}
-
-      - name: Terraform Destroy
-        uses: ./.github/actions/terraform-destroy
-        with:
-          working-directory: terraform
-          aws-region:        ${{ env.AWS_REGION }}
-          state-bucket:      ${{ env.STATE_BUCKET }}
-          resource-prefix:   ${{ env.RESOURCE_PREFIX }}

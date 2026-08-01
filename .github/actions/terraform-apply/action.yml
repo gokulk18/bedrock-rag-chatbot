@@ -38,36 +38,40 @@ runs:
         PREFIX:     "bedrock-rag-chatbot-dev"
       run: |
         ACCOUNT_ID=$(aws sts get-caller-identity --query Account --output text)
-        echo "Account: $ACCOUNT_ID | Importing any pre-existing resources..."
+        echo "=========================================================="
+        echo " Pre-Apply Check: Account $ACCOUNT_ID ($AWS_REGION)"
+        echo "=========================================================="
 
-        # ── AWS Budget ────────────────────────────────────────────────
+        # Helper function to safely run terraform import
+        safe_import() {
+          local address="$1"
+          local id="$2"
+          echo "  → Importing $address ($id)..."
+          terraform import "$address" "$id" || true
+        }
+
+        # ── 1. AWS Budget ─────────────────────────────────────────────
         BUDGET_NAME="${PREFIX}-monthly-budget"
         if aws budgets describe-budget \
               --account-id "$ACCOUNT_ID" \
               --budget-name "$BUDGET_NAME" \
-              --no-cli-pager 2>/dev/null | grep -q '"BudgetName"'; then
-          echo "Budget '$BUDGET_NAME' exists — importing..."
-          terraform import "module.budget.aws_budgets_budget.this" \
-            "${ACCOUNT_ID}:${BUDGET_NAME}" 2>/dev/null && echo "  ✓ Budget imported" || echo "  → already in state or import failed (continuing)"
-        else
-          echo "Budget '$BUDGET_NAME' not found — skipping import."
+              --no-cli-pager >/dev/null 2>&1; then
+          echo "[+] Found existing Budget: $BUDGET_NAME"
+          safe_import "module.budget.aws_budgets_budget.this" "${ACCOUNT_ID}:${BUDGET_NAME}"
         fi
 
-        # ── CloudFront Origin Access Control ─────────────────────────
+        # ── 2. CloudFront Origin Access Control ───────────────────────
         OAC_NAME="${PREFIX}-oac"
         OAC_ID=$(aws cloudfront list-origin-access-controls \
           --no-cli-pager \
           --query "OriginAccessControlList.Items[?Name=='${OAC_NAME}'].Id | [0]" \
-          --output text 2>/dev/null)
-        if [ -n "$OAC_ID" ] && [ "$OAC_ID" != "None" ]; then
-          echo "CloudFront OAC '$OAC_NAME' (ID: $OAC_ID) exists — importing..."
-          terraform import "module.cloudfront.aws_cloudfront_origin_access_control.this" \
-            "$OAC_ID" 2>/dev/null && echo "  ✓ CloudFront OAC imported" || echo "  → already in state or import failed (continuing)"
-        else
-          echo "CloudFront OAC '$OAC_NAME' not found — skipping import."
+          --output text 2>/dev/null || echo "None")
+        if [ -n "$OAC_ID" ] && [ "$OAC_ID" != "None" ] && [ "$OAC_ID" != "null" ]; then
+          echo "[+] Found existing CloudFront OAC: $OAC_NAME ($OAC_ID)"
+          safe_import "module.cloudfront.aws_cloudfront_origin_access_control.this" "$OAC_ID"
         fi
 
-        # ── CloudWatch Log Groups (Lambda) ────────────────────────────
+        # ── 3. CloudWatch Log Groups (Lambda) ──────────────────────────
         for LG in \
             "/aws/lambda/${PREFIX}-ingestion" \
             "/aws/lambda/${PREFIX}-query"; do
@@ -80,16 +84,23 @@ runs:
           EXISTS=$(aws logs describe-log-groups \
             --log-group-name-prefix "$LG" \
             --query "logGroups[?logGroupName=='${LG}'].logGroupName | [0]" \
-            --output text 2>/dev/null)
+            --output text 2>/dev/null || echo "None")
           if [ "$EXISTS" = "$LG" ]; then
-            echo "Log group '$LG' exists — importing..."
-            terraform import "$RESOURCE" "$LG" 2>/dev/null && echo "  ✓ $LG imported" || echo "  → already in state or import failed (continuing)"
-          else
-            echo "Log group '$LG' not found — skipping import."
+            echo "[+] Found existing CloudWatch Log Group: $LG"
+            safe_import "$RESOURCE" "$LG"
           fi
         done
 
-        echo "Pre-apply import pass complete."
+        # ── 4. DynamoDB Table ─────────────────────────────────────────
+        DDB_NAME="${PREFIX}-conversations"
+        if aws dynamodb describe-table --table-name "$DDB_NAME" --no-cli-pager >/dev/null 2>&1; then
+          echo "[+] Found existing DynamoDB Table: $DDB_NAME"
+          safe_import "module.conversation_history.aws_dynamodb_table.this" "$DDB_NAME"
+        fi
+
+        echo "=========================================================="
+        echo " Pre-Apply Import Check Complete"
+        echo "=========================================================="
 
     # ------------------------------------------------------------------
     # Phase 1 — Apply OpenSearch resources first (they need time to create)

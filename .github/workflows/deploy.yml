@@ -125,6 +125,22 @@ jobs:
           state-bucket:      ${{ env.STATE_BUCKET }}
           resource-prefix:   ${{ env.RESOURCE_PREFIX }}
 
+      # Print deployment URL to workflow summary (apply only)
+      - name: Deployment Summary
+        if: ${{ github.event.inputs.action == 'apply' }}
+        shell: bash
+        run: |
+          DOMAIN="${{ steps.tf_apply.outputs.cloudfront_domain }}"
+          ENDPOINT="${{ steps.tf_apply.outputs.chat_endpoint }}"
+          echo "## ✅ Deployment Complete" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "| Resource | Value |" >> $GITHUB_STEP_SUMMARY
+          echo "|---|---|" >> $GITHUB_STEP_SUMMARY
+          echo "| 🌐 Application URL | https://$DOMAIN |" >> $GITHUB_STEP_SUMMARY
+          echo "| 📡 Chat API Endpoint | $ENDPOINT |" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "**Access your app:** [https://$DOMAIN](https://$DOMAIN)" >> $GITHUB_STEP_SUMMARY
+
   lambda:
     name: Deploy Lambda Functions
     needs: apply
@@ -168,3 +184,41 @@ jobs:
           cloudfront-id:     ${{ needs.apply.outputs.cloudfront_id }}
           cloudfront-domain: ${{ needs.apply.outputs.cloudfront_domain }}
           chat-endpoint:     ${{ needs.apply.outputs.chat_endpoint }}
+
+  # ---------------------------------------------------------------------------
+  # summary — final deployment notice printed after lambda + frontend both done
+  # ---------------------------------------------------------------------------
+  summary:
+    name: Deployment Summary
+    needs: [apply, lambda, frontend]
+    if: ${{ github.event.inputs.action == 'apply' }}
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+
+    steps:
+      - name: Print Application URL
+        shell: bash
+        run: |
+          DOMAIN="${{ needs.apply.outputs.cloudfront_domain }}"
+          ENDPOINT="${{ needs.apply.outputs.chat_endpoint }}"
+          echo ""
+          echo "╔══════════════════════════════════════════════════════╗"
+          echo "║          🚀  DEPLOYMENT COMPLETE                     ║"
+          echo "╠══════════════════════════════════════════════════════╣"
+          echo "║  🌐  App URL  : https://$DOMAIN"
+          echo "║  📡  API      : $ENDPOINT"
+          echo "╚══════════════════════════════════════════════════════╝"
+          echo ""
+
+      - name: Write to Job Summary
+        shell: bash
+        run: |
+          DOMAIN="${{ needs.apply.outputs.cloudfront_domain }}"
+          ENDPOINT="${{ needs.apply.outputs.chat_endpoint }}"
+          echo "## 🚀 Deployment Complete" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "| | Value |" >> $GITHUB_STEP_SUMMARY
+          echo "|---|---|" >> $GITHUB_STEP_SUMMARY
+          echo "| 🌐 **Application URL** | [https://$DOMAIN](https://$DOMAIN) |" >> $GITHUB_STEP_SUMMARY
+          echo "| 📡 **Chat API** | \`$ENDPOINT\` |" >> $GITHUB_STEP_SUMMARY

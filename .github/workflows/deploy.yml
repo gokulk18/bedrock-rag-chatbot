@@ -1,571 +1,184 @@
 name: Infrastructure & Application Pipeline
 
 # =============================================================================
-# Unified CI/CD Pipeline with Action Choices (plan, apply, destroy)
+# Manual workflow dispatch with action dropdown: plan | apply | destroy
 #
-# Triggers:
-# - push to main (defaults to 'apply')
-# - workflow_dispatch (manual trigger with action choice dropdown: apply, plan, destroy)
+#  plan    → validate + show what Terraform would change (no mutations)
+#  apply   → deploy infrastructure, then Lambda & frontend in parallel
+#  destroy → tear down all infrastructure (Terraform first, then cleanup)
 # =============================================================================
+
 on:
-  push:
-    branches: [ main ]
   workflow_dispatch:
     inputs:
       action:
-        description: "Terragrunt / Terraform Action to execute"
+        description: "Terraform action to execute"
         required: true
         type: choice
-        default: "apply"
+        default: plan
         options:
-          - apply
           - plan
+          - apply
           - destroy
+
+concurrency:
+  group: terraform-${{ github.ref }}-${{ github.event.inputs.action }}
+  cancel-in-progress: false
 
 permissions:
   id-token: write   # Required for OIDC token generation
   contents: read    # Required for checkout
 
 env:
-  TF_IN_AUTOMATION: "true"
-  TERRAFORM_VERSION: "1.15.4"
-  AWS_REGION: "us-east-1"
-  STATE_BUCKET: "bedrock-rag-chatbot-dev-tfstate"
-  ACTION: ${{ github.event.inputs.action || 'apply' }}
-  TERRAFORM_ROLE: "arn:aws:iam::902664897239:role/github-actions-terraform-role"
-  LAMBDA_ROLE:    "arn:aws:iam::902664897239:role/github-actions-lambda-role"
-  FRONTEND_ROLE:  "arn:aws:iam::902664897239:role/github-actions-frontend-role"
+  TF_IN_AUTOMATION:   "true"
+  TERRAFORM_VERSION:  "1.15.4"
+  AWS_REGION:         "us-east-1"
+  STATE_BUCKET:       "bedrock-rag-chatbot-dev-tfstate"
+  TERRAFORM_ROLE:     "arn:aws:iam::902664897239:role/github-actions-terraform-role"
+  LAMBDA_ROLE:        "arn:aws:iam::902664897239:role/github-actions-lambda-role"
+  FRONTEND_ROLE:      "arn:aws:iam::902664897239:role/github-actions-frontend-role"
   INGESTION_FUNCTION: "bedrock-rag-chatbot-dev-ingestion"
   QUERY_FUNCTION:     "bedrock-rag-chatbot-dev-query"
+  RESOURCE_PREFIX:    "bedrock-rag-chatbot"
 
 jobs:
+
   # ---------------------------------------------------------------------------
-  # Job 0: Bootstrap — create S3 state bucket if missing (runs for apply & plan)
+  # plan — show what Terraform would do (no infrastructure changes)
   # ---------------------------------------------------------------------------
-  bootstrap:
-    name: "0. Bootstrap State Bucket"
+  plan:
+    name: "Terraform Plan"
     runs-on: ubuntu-latest
-    if: ${{ (github.event.inputs.action || 'apply') != 'destroy' }}
+    if: ${{ github.event.inputs.action == 'plan' }}
 
     steps:
-      - name: Configure AWS Credentials via OIDC
-        uses: aws-actions/configure-aws-credentials@v4
+      - name: Setup (checkout + Terraform + AWS auth)
+        uses: ./.github/actions/terraform-setup
         with:
-          role-to-assume: ${{ env.TERRAFORM_ROLE }}
-          aws-region: ${{ env.AWS_REGION }}
-
-      - name: Ensure Terraform State Bucket Exists
-        run: |
-          BUCKET="${{ env.STATE_BUCKET }}"
-          REGION="${{ env.AWS_REGION }}"
-
-          if aws s3api head-bucket --bucket "$BUCKET" 2>/dev/null; then
-            echo "State bucket '$BUCKET' already exists."
-          else
-            echo "Creating state bucket: $BUCKET"
-            aws s3api create-bucket --bucket "$BUCKET" --region "$REGION" --no-cli-pager
-            aws s3api put-bucket-versioning --bucket "$BUCKET" --versioning-configuration Status=Enabled
-            aws s3api put-bucket-encryption --bucket "$BUCKET" \
-              --server-side-encryption-configuration '{"Rules":[{"ApplyServerSideEncryptionByDefault":{"SSEAlgorithm":"AES256"}}]}'
-            aws s3api put-public-access-block --bucket "$BUCKET" \
-              --public-access-block-configuration "BlockPublicAcls=true,IgnorePublicAcls=true,BlockPublicPolicy=true,RestrictPublicBuckets=true"
-            echo "State bucket '$BUCKET' created and secured."
-          fi
-
-  # ---------------------------------------------------------------------------
-  # Job 1: Terraform — handles plan, apply, or destroy based on input action
-  # ---------------------------------------------------------------------------
-  terraform:
-    name: "1. Terraform (${{ github.event.inputs.action || 'apply' }})"
-    runs-on: ubuntu-latest
-    needs: bootstrap
-    if: ${{ !failure() && !cancelled() }}
-
-    outputs:
-      frontend_bucket:  ${{ steps.tf_out.outputs.frontend_bucket }}
-      cloudfront_id:    ${{ steps.tf_out.outputs.cloudfront_id }}
-      cloudfront_domain: ${{ steps.tf_out.outputs.cloudfront_domain }}
-      chat_endpoint:    ${{ steps.tf_out.outputs.chat_endpoint }}
-
-    steps:
-      - name: Checkout Repository
-        uses: actions/checkout@v4
-
-      - name: Setup Terraform ${{ env.TERRAFORM_VERSION }}
-        uses: hashicorp/setup-terraform@v3
-        with:
-          terraform_version: ${{ env.TERRAFORM_VERSION }}
-          terraform_wrapper: false
-
-      - name: Configure AWS Credentials via OIDC
-        uses: aws-actions/configure-aws-credentials@v4
-        with:
-          role-to-assume: ${{ env.TERRAFORM_ROLE }}
-          aws-region: ${{ env.AWS_REGION }}
-
-      - name: Pre-Cleanup Stuck Resources (S3, Bedrock, OpenSearch & IAM)
-        if: ${{ env.ACTION == 'destroy' || env.ACTION == 'apply' }}
-        run: |
-          echo "Pre-cleaning any leftover AWS resources..."
-          python3 - << 'EOF'
-          import boto3
-          region = 'us-east-1'
-          s3 = boto3.client('s3', region_name=region)
-          bedrock = boto3.client('bedrock-agent', region_name=region)
-          aoss = boto3.client('opensearchserverless', region_name=region)
-          iam = boto3.client('iam')
-          prefix = 'bedrock-rag-chatbot'
-
-          # 1. Purge document and frontend S3 buckets if destroying
-          if "${{ env.ACTION }}" == "destroy":
-              for bucket in s3.list_buckets().get('Buckets', []):
-                  name = bucket['Name']
-                  if prefix in name and 'tfstate' not in name:
-                      try:
-                          print(f"Purging S3 bucket: {name}")
-                          paginator = s3.get_paginator('list_object_versions')
-                          for page in paginator.paginate(Bucket=name):
-                              delete_keys = [{'Key': v['Key'], 'VersionId': v['VersionId']} for v in page.get('Versions', [])]
-                              delete_keys.extend([{'Key': dm['Key'], 'VersionId': dm['VersionId']} for dm in page.get('DeleteMarkers', [])])
-                              if delete_keys:
-                                  s3.delete_objects(Bucket=name, Delete={'Objects': delete_keys})
-                      except Exception as e:
-                          print(f"S3 purge notice for {name}: {e}")
-
-          # 2. Cleanup stuck Bedrock Data Sources / KBs
-          try:
-              for kb in bedrock.list_knowledge_bases().get('knowledgeBaseSummaries', []):
-                  kb_id = kb['knowledgeBaseId']
-                  if prefix in kb.get('name', ''):
-                      try:
-                          for ds in bedrock.list_data_sources(knowledgeBaseId=kb_id).get('dataSourceSummaries', []):
-                              ds_id = ds['dataSourceId']
-                              if ds.get('status') == 'DELETE_UNSUCCESSFUL' or "${{ env.ACTION }}" == "destroy":
-                                  print(f"Force deleting Bedrock data source {ds_id}...")
-                                  try: bedrock.delete_data_source(knowledgeBaseId=kb_id, dataSourceId=ds_id)
-                                  except Exception: pass
-                      except Exception: pass
-                      if "${{ env.ACTION }}" == "destroy":
-                          print(f"Force deleting Bedrock Knowledge Base {kb_id}...")
-                          try: bedrock.delete_knowledge_base(knowledgeBaseId=kb_id)
-                          except Exception: pass
-          except Exception as e:
-              print(f"Bedrock cleanup notice: {e}")
-
-          # 3. Cleanup OpenSearch security and access policies if destroying
-          if "${{ env.ACTION }}" == "destroy":
-              for p_type in ['encryption', 'network']:
-                  try:
-                      for p in aoss.list_security_policies(type=p_type).get('securityPolicySummaries', []):
-                          if prefix in p.get('name', ''):
-                              try: aoss.delete_security_policy(type=p_type, name=p['name'])
-                              except Exception: pass
-                  except Exception: pass
-              try:
-                  for p in aoss.list_access_policies(type='data').get('accessPolicySummaries', []):
-                      if prefix in p.get('name', ''):
-                          try: aoss.delete_access_policy(type='data', name=p['name'])
-                          except Exception: pass
-              except Exception: pass
-          EOF
-          echo "Pre-cleanup finished."
+          terraform-version: ${{ env.TERRAFORM_VERSION }}
+          aws-role-arn:      ${{ env.TERRAFORM_ROLE }}
+          aws-region:        ${{ env.AWS_REGION }}
 
       - name: Terraform Init
-        working-directory: terraform
-        run: terraform init
+        uses: ./.github/actions/terraform-init
+        with:
+          working-directory: terraform
+          state-bucket:      ${{ env.STATE_BUCKET }}
+          aws-region:        ${{ env.AWS_REGION }}
 
-      - name: Terraform Validate
-        if: ${{ env.ACTION != 'destroy' }}
-        working-directory: terraform
-        run: terraform validate
-
-      - name: "Terraform Action: Plan"
-        if: ${{ env.ACTION == 'plan' }}
-        working-directory: terraform
-        run: terraform plan -no-color
-
-      # -----------------------------------------------------------------------
-      # Apply Flow (Phase 1 -> OpenSearch Index -> Phase 2)
-      # -----------------------------------------------------------------------
-      - name: "Phase 1: Apply OpenSearch Collection"
-        if: ${{ env.ACTION == 'apply' }}
-        working-directory: terraform
-        run: |
-          terraform apply -auto-approve \
-            -target=module.opensearch.aws_opensearchserverless_security_policy.encryption \
-            -target=module.opensearch.aws_opensearchserverless_security_policy.network \
-            -target=module.opensearch.aws_opensearchserverless_collection.this \
-            -target=module.opensearch.aws_opensearchserverless_access_policy.this
-          echo "OpenSearch collection created."
-
-      - name: "Phase 1b: Wait for OpenSearch Collection to be Active"
-        if: ${{ env.ACTION == 'apply' }}
-        run: |
-          cd terraform
-          COLLECTION_NAME="bedrock-rag-chatbot-dev-vec"
-          echo "Waiting for collection '$COLLECTION_NAME' to become ACTIVE..."
-          for i in {1..30}; do
-            STATUS=$(aws opensearchserverless list-collections \
-              --collection-filters name=$COLLECTION_NAME \
-              --query 'collectionSummaries[0].status' \
-              --output text --no-cli-pager 2>/dev/null)
-            echo "Attempt $i: status = $STATUS"
-            if [ "$STATUS" = "ACTIVE" ]; then
-              echo "Collection is ACTIVE."
-              break
-            fi
-            sleep 10
-          done
-
-      - name: "Phase 1c: Create Vector Index in OpenSearch"
-        if: ${{ env.ACTION == 'apply' }}
-        run: |
-          pip install --quiet opensearch-py requests-aws4auth boto3
-          python3 - << 'EOF'
-          import os, sys, boto3
-          from opensearchpy import OpenSearch, RequestsHttpConnection, AWSV4SignerAuth
-
-          region = os.environ.get('AWS_REGION', 'us-east-1')
-          auth = AWSV4SignerAuth(boto3.Session().get_credentials(), region, 'aoss')
-          endpoint = os.popen('cd terraform && terraform output -raw opensearch_collection_endpoint').read().strip()
-          host = endpoint.replace('https://', '')
-
-          client = OpenSearch(
-              hosts=[{'host': host, 'port': 443}],
-              http_auth=auth, use_ssl=True, verify_certs=True,
-              connection_class=RequestsHttpConnection, pool_maxsize=20
-          )
-
-          index_name = 'bedrock-knowledge-base-default-index'
-          index_body = {
-              "settings": { "index": { "knn": True, "knn.algo_param.ef_search": 512 } },
-              "mappings": {
-                  "properties": {
-                      "bedrock-knowledge-base-default-vector": {
-                          "type": "knn_vector", "dimension": 1024,
-                          "method": { "name": "hnsw", "engine": "faiss", "space_type": "l2", "parameters": { "ef_construction": 512, "m": 16 } }
-                      },
-                      "AMAZON_BEDROCK_TEXT_CHUNK": { "type": "text" },
-                      "AMAZON_BEDROCK_METADATA": { "type": "text", "index": False }
-                  }
-              }
-          }
-
-          if not client.indices.exists(index=index_name):
-              print(f"Creating index '{index_name}'...")
-              client.indices.create(index=index_name, body=index_body)
-          else:
-              print(f"Index '{index_name}' already exists.")
-          EOF
-
-      - name: "Phase 2: Full Terraform Apply"
-        if: ${{ env.ACTION == 'apply' }}
-        working-directory: terraform
-        run: terraform apply -auto-approve
-
-      - name: "Terraform Action: Destroy (Complete AWS Teardown)"
-        if: ${{ env.ACTION == 'destroy' }}
-        working-directory: terraform
-        run: |
-          echo "Starting complete AWS resource teardown..."
-          python3 - << 'EOF'
-          import boto3, time
-
-          region = 'us-east-1'
-          s3 = boto3.client('s3', region_name=region)
-          bedrock = boto3.client('bedrock-agent', region_name=region)
-          aoss = boto3.client('opensearchserverless', region_name=region)
-          apigw = boto3.client('apigatewayv2', region_name=region)
-          lam = boto3.client('lambda', region_name=region)
-          ddb = boto3.client('dynamodb', region_name=region)
-          cw = boto3.client('cloudwatch', region_name=region)
-          sns = boto3.client('sns', region_name=region)
-          cf = boto3.client('cloudfront', region_name=region)
-          iam = boto3.client('iam')
-
-          prefix = 'bedrock-rag-chatbot'
-
-          # 1. Disable CloudFront Distributions
-          try:
-              for d in cf.list_distributions().get('DistributionList', {}).get('Items', []):
-                  dist_id = d['Id']
-                  origins = [o.get('DomainName', '') for o in d.get('Origins', {}).get('Items', [])]
-                  if any(prefix in orig for orig in origins) or prefix in d.get('Comment', ''):
-                      print(f"Disabling CloudFront distribution: {dist_id}")
-                      try:
-                          res = cf.get_distribution_config(Id=dist_id)
-                          cfg = res['DistributionConfig']
-                          etag = res['ETag']
-                          if cfg['Enabled']:
-                              cfg['Enabled'] = False
-                              cf.update_distribution(Id=dist_id, DistributionConfig=cfg, IfMatch=etag)
-                              print(f"Disabled CloudFront distribution {dist_id}")
-                      except Exception as ex:
-                          print(f"CloudFront update notice for {dist_id}: {ex}")
-          except Exception as e:
-              print(f"CloudFront cleanup notice: {e}")
-
-          # 2. Delete API Gateway APIs
-          try:
-              for api in apigw.get_apis().get('Items', []):
-                  if prefix in api.get('Name', ''):
-                      print(f"Deleting API Gateway: {api['Name']} (ID: {api['ApiId']})")
-                      try: apigw.delete_api(ApiId=api['ApiId'])
-                      except Exception as ex: print(f"API Gateway delete notice: {ex}")
-          except Exception as e:
-              print(f"API Gateway cleanup notice: {e}")
-
-          # 3. Purge Document & Frontend S3 Buckets (keep state bucket for terraform)
-          try:
-              for b in s3.list_buckets().get('Buckets', []):
-                  name = b['Name']
-                  if prefix in name and 'tfstate' not in name:
-                      print(f"Purging and deleting S3 bucket: {name}")
-                      try:
-                          paginator = s3.get_paginator('list_object_versions')
-                          for page in paginator.paginate(Bucket=name):
-                              keys = [{'Key': v['Key'], 'VersionId': v['VersionId']} for v in page.get('Versions', [])]
-                              keys.extend([{'Key': dm['Key'], 'VersionId': dm['VersionId']} for dm in page.get('DeleteMarkers', [])])
-                              if keys:
-                                  s3.delete_objects(Bucket=name, Delete={'Objects': keys})
-                          s3.delete_bucket(Bucket=name)
-                          print(f"Deleted S3 bucket {name}")
-                      except Exception as ex:
-                          print(f"S3 delete notice for {name}: {ex}")
-          except Exception as e:
-              print(f"S3 cleanup notice: {e}")
-
-          # 4. Delete Bedrock Knowledge Bases & Data Sources
-          try:
-              for kb in bedrock.list_knowledge_bases().get('knowledgeBaseSummaries', []):
-                  kb_id = kb['knowledgeBaseId']
-                  if prefix in kb.get('name', ''):
-                      try:
-                          for ds in bedrock.list_data_sources(knowledgeBaseId=kb_id).get('dataSourceSummaries', []):
-                              print(f"Deleting Bedrock Data Source: {ds['dataSourceId']}")
-                              try: bedrock.delete_data_source(knowledgeBaseId=kb_id, dataSourceId=ds['dataSourceId'])
-                              except Exception: pass
-                      except Exception: pass
-                      print(f"Deleting Bedrock Knowledge Base: {kb_id}")
-                      try: bedrock.delete_knowledge_base(knowledgeBaseId=kb_id)
-                      except Exception: pass
-          except Exception as e:
-              print(f"Bedrock cleanup notice: {e}")
-
-          # 5. Delete OpenSearch Serverless Collections & Security/Access Policies
-          try:
-              for c in aoss.list_collections().get('collectionSummaries', []):
-                  if prefix in c.get('name', ''):
-                      print(f"Deleting OpenSearch collection: {c['name']}")
-                      try: aoss.delete_collection(id=c['id'])
-                      except Exception: pass
-              for p_type in ['encryption', 'network']:
-                  try:
-                      for p in aoss.list_security_policies(type=p_type).get('securityPolicySummaries', []):
-                          if prefix in p.get('name', ''):
-                              try: aoss.delete_security_policy(type=p_type, name=p['name'])
-                              except Exception: pass
-                  except Exception: pass
-              try:
-                  for p in aoss.list_access_policies(type='data').get('accessPolicySummaries', []):
-                      if prefix in p.get('name', ''):
-                          try: aoss.delete_access_policy(type='data', name=p['name'])
-                          except Exception: pass
-              except Exception: pass
-          except Exception as e:
-              print(f"OpenSearch cleanup notice: {e}")
-
-          # 6. Delete Lambda Functions
-          try:
-              for f in lam.list_functions().get('Functions', []):
-                  if prefix in f.get('FunctionName', ''):
-                      print(f"Deleting Lambda: {f['FunctionName']}")
-                      try: lam.delete_function(FunctionName=f['FunctionName'])
-                      except Exception: pass
-          except Exception as e:
-              print(f"Lambda cleanup notice: {e}")
-
-          # 7. Delete DynamoDB Tables
-          try:
-              for t in ddb.list_tables().get('TableNames', []):
-                  if prefix in t:
-                      print(f"Deleting DynamoDB table: {t}")
-                      try: ddb.delete_table(TableName=t)
-                      except Exception: pass
-          except Exception as e:
-              print(f"DynamoDB cleanup notice: {e}")
-
-          # 8. Delete CloudWatch Alarms & SNS Topics
-          try:
-              alarms = [a['AlarmName'] for a in cw.describe_alarms().get('MetricAlarms', []) if prefix in a.get('AlarmName', '')]
-              if alarms:
-                  cw.delete_alarms(AlarmNames=alarms)
-              for t in sns.list_topics().get('Topics', []):
-                  if prefix in t['TopicArn']:
-                      sns.delete_topic(TopicArn=t['TopicArn'])
-          except Exception as e:
-              print(f"Monitoring cleanup notice: {e}")
-
-          # 9. Delete IAM Roles & Policies
-          try:
-              for role in iam.list_roles().get('Roles', []):
-                  rname = role['RoleName']
-                  if prefix in rname:
-                      print(f"Deleting IAM Role: {rname}")
-                      try:
-                          for p in iam.list_attached_role_policies(RoleName=rname).get('AttachedPolicies', []):
-                              try: iam.detach_role_policy(RoleName=rname, PolicyArn=p['PolicyArn'])
-                              except Exception: pass
-                          try: iam.delete_role(RoleName=rname)
-                          except Exception: pass
-                      except Exception: pass
-              for pol in iam.list_policies(Scope='Local').get('Policies', []):
-                  pname = pol['PolicyName']
-                  if prefix in pname:
-                      print(f"Deleting IAM Policy: {pname}")
-                      try: iam.delete_policy(PolicyArn=pol['Arn'])
-                      except Exception: pass
-          except Exception as e:
-              print(f"IAM cleanup notice: {e}")
-
-          print("All AWS cloud resources purged.")
-          EOF
-
-          # Run terraform destroy to clean up remaining state entries
-          terraform destroy -auto-approve || true
-
-          # Finally delete the S3 state bucket
-          python3 - << 'EOF'
-          import boto3
-          s3 = boto3.client('s3', region_name='us-east-1')
-          bucket_name = "${{ env.STATE_BUCKET }}"
-          try:
-              print(f"Purging and deleting state bucket: {bucket_name}")
-              paginator = s3.get_paginator('list_object_versions')
-              for page in paginator.paginate(Bucket=bucket_name):
-                  keys = [{'Key': v['Key'], 'VersionId': v['VersionId']} for v in page.get('Versions', [])]
-                  keys.extend([{'Key': dm['Key'], 'VersionId': dm['VersionId']} for dm in page.get('DeleteMarkers', [])])
-                  if keys:
-                      s3.delete_objects(Bucket=bucket_name, Delete={'Objects': keys})
-              s3.delete_bucket(Bucket=bucket_name)
-              print(f"State bucket {bucket_name} deleted.")
-          except Exception as e:
-              print(f"State bucket delete notice: {e}")
-          EOF
-          echo "Teardown complete."
-
-      - name: Capture Terraform Outputs
-        if: ${{ env.ACTION == 'apply' }}
-        id: tf_out
-        working-directory: terraform
-        run: |
-          FRONTEND_BUCKET=$(terraform output -raw frontend_bucket_name)
-          CLOUDFRONT_ID=$(terraform output -raw cloudfront_distribution_id)
-          CLOUDFRONT_DOMAIN=$(terraform output -raw cloudfront_domain_name)
-          CHAT_ENDPOINT=$(terraform output -raw chat_endpoint_url)
-
-          echo "frontend_bucket=$FRONTEND_BUCKET" >> $GITHUB_OUTPUT
-          echo "cloudfront_id=$CLOUDFRONT_ID"     >> $GITHUB_OUTPUT
-          echo "cloudfront_domain=$CLOUDFRONT_DOMAIN" >> $GITHUB_OUTPUT
-          echo "chat_endpoint=$CHAT_ENDPOINT"     >> $GITHUB_OUTPUT
-
-          echo ""
-          echo "=========================================="
-          echo "Infrastructure Deployed Successfully"
-          echo "=========================================="
-          echo "Frontend S3 Bucket : $FRONTEND_BUCKET"
-          echo "CloudFront ID      : $CLOUDFRONT_ID"
-          echo "CloudFront Domain  : https://$CLOUDFRONT_DOMAIN"
-          echo "Chat API Endpoint  : $CHAT_ENDPOINT"
-          echo "=========================================="
+      - name: Terraform Plan
+        uses: ./.github/actions/terraform-plan
+        with:
+          working-directory: terraform
+          destroy:           "false"
 
   # ---------------------------------------------------------------------------
-  # Job 2: Lambda — deploy backend code (runs only on apply)
+  # apply — provision / update all infrastructure
+  # ---------------------------------------------------------------------------
+  apply:
+    name: "Terraform Apply"
+    runs-on: ubuntu-latest
+    if: ${{ github.event.inputs.action == 'apply' }}
+
+    outputs:
+      frontend_bucket:   ${{ steps.tf_apply.outputs.frontend_bucket }}
+      cloudfront_id:     ${{ steps.tf_apply.outputs.cloudfront_id }}
+      cloudfront_domain: ${{ steps.tf_apply.outputs.cloudfront_domain }}
+      chat_endpoint:     ${{ steps.tf_apply.outputs.chat_endpoint }}
+
+    steps:
+      - name: Setup (checkout + Terraform + AWS auth)
+        uses: ./.github/actions/terraform-setup
+        with:
+          terraform-version: ${{ env.TERRAFORM_VERSION }}
+          aws-role-arn:      ${{ env.TERRAFORM_ROLE }}
+          aws-region:        ${{ env.AWS_REGION }}
+
+      - name: Terraform Init
+        uses: ./.github/actions/terraform-init
+        with:
+          working-directory: terraform
+          state-bucket:      ${{ env.STATE_BUCKET }}
+          aws-region:        ${{ env.AWS_REGION }}
+
+      - name: Terraform Apply
+        id: tf_apply
+        uses: ./.github/actions/terraform-apply
+        with:
+          working-directory: terraform
+          aws-region:        ${{ env.AWS_REGION }}
+
+  # ---------------------------------------------------------------------------
+  # lambda — deploy Lambda code (runs after apply, in parallel with frontend)
   # ---------------------------------------------------------------------------
   lambda:
-    name: "2. Deploy Lambda Functions"
+    name: "Deploy Lambda Functions"
     runs-on: ubuntu-latest
-    needs: terraform
-    if: ${{ (github.event.inputs.action || 'apply') == 'apply' }}
+    needs: apply
+    if: ${{ github.event.inputs.action == 'apply' }}
 
     steps:
       - name: Checkout Repository
         uses: actions/checkout@v4
 
-      - name: Setup Python 3.12
-        uses: actions/setup-python@v5
+      - name: Deploy Lambda Functions
+        uses: ./.github/actions/lambda-deploy
         with:
-          python-version: '3.12'
-
-      - name: Configure AWS Credentials via OIDC
-        uses: aws-actions/configure-aws-credentials@v4
-        with:
-          role-to-assume: ${{ env.LAMBDA_ROLE }}
-          aws-region: ${{ env.AWS_REGION }}
-
-      - name: Package & Deploy Ingestion Lambda
-        run: |
-          cd backend/ingestion
-          zip -r ingestion.zip index.py
-          aws lambda update-function-code \
-            --function-name ${{ env.INGESTION_FUNCTION }} \
-            --zip-file fileb://ingestion.zip \
-            --no-cli-pager
-
-      - name: Package & Deploy Query Lambda
-        run: |
-          cd backend/query
-          zip -r query.zip index.py
-          aws lambda update-function-code \
-            --function-name ${{ env.QUERY_FUNCTION }} \
-            --zip-file fileb://query.zip \
-            --no-cli-pager
-
-      - name: Wait for Lambda Updates to Complete
-        run: |
-          aws lambda wait function-updated --function-name ${{ env.INGESTION_FUNCTION }} --no-cli-pager
-          aws lambda wait function-updated --function-name ${{ env.QUERY_FUNCTION }} --no-cli-pager
-          echo "Both Lambda functions are active and ready."
+          aws-role-arn:        ${{ env.LAMBDA_ROLE }}
+          aws-region:          ${{ env.AWS_REGION }}
+          ingestion-function:  ${{ env.INGESTION_FUNCTION }}
+          query-function:      ${{ env.QUERY_FUNCTION }}
 
   # ---------------------------------------------------------------------------
-  # Job 3: Frontend — sync S3 + invalidate CloudFront (runs only on apply)
+  # frontend — sync UI assets to S3 + invalidate CloudFront (parallel with lambda)
   # ---------------------------------------------------------------------------
   frontend:
-    name: "3. Deploy Frontend"
+    name: "Deploy Frontend"
     runs-on: ubuntu-latest
-    needs: terraform
-    if: ${{ (github.event.inputs.action || 'apply') == 'apply' }}
+    needs: apply
+    if: ${{ github.event.inputs.action == 'apply' }}
 
     steps:
       - name: Checkout Repository
         uses: actions/checkout@v4
 
-      - name: Configure AWS Credentials via OIDC
-        uses: aws-actions/configure-aws-credentials@v4
+      - name: Deploy Frontend
+        uses: ./.github/actions/frontend-deploy
         with:
-          role-to-assume: ${{ env.FRONTEND_ROLE }}
-          aws-region: ${{ env.AWS_REGION }}
+          aws-role-arn:      ${{ env.FRONTEND_ROLE }}
+          aws-region:        ${{ env.AWS_REGION }}
+          frontend-bucket:   ${{ needs.apply.outputs.frontend_bucket }}
+          cloudfront-id:     ${{ needs.apply.outputs.cloudfront_id }}
+          cloudfront-domain: ${{ needs.apply.outputs.cloudfront_domain }}
+          chat-endpoint:     ${{ needs.apply.outputs.chat_endpoint }}
 
-      - name: Inject API Endpoint Config & Sync Frontend to S3
-        run: |
-          echo "Injecting API endpoint: ${{ needs.terraform.outputs.chat_endpoint }}"
-          echo "window.CHATBOT_API_ENDPOINT = '${{ needs.terraform.outputs.chat_endpoint }}';" > ./frontend/js/config.js
-          
-          aws s3 sync ./frontend \
-            s3://${{ needs.terraform.outputs.frontend_bucket }} \
-            --delete --no-progress
+  # ---------------------------------------------------------------------------
+  # destroy — tear down all infrastructure (correct order: tf destroy → cleanup)
+  # ---------------------------------------------------------------------------
+  destroy:
+    name: "Terraform Destroy"
+    runs-on: ubuntu-latest
+    if: ${{ github.event.inputs.action == 'destroy' }}
 
-      - name: Invalidate CloudFront Cache
-        run: |
-          INVALIDATION_ID=$(aws cloudfront create-invalidation \
-            --distribution-id ${{ needs.terraform.outputs.cloudfront_id }} \
-            --paths "/*" \
-            --query 'Invalidation.Id' \
-            --output text \
-            --no-cli-pager)
-          echo "CloudFront cache invalidated: $INVALIDATION_ID"
-          echo ""
-          echo "=========================================================="
-          echo "🚀 Web Chatbot UI URL : https://${{ needs.terraform.outputs.cloudfront_domain }}"
-          echo "📡 API Gateway Endpoint: ${{ needs.terraform.outputs.chat_endpoint }}"
-          echo "=========================================================="
+    steps:
+      - name: Setup (checkout + Terraform + AWS auth)
+        uses: ./.github/actions/terraform-setup
+        with:
+          terraform-version: ${{ env.TERRAFORM_VERSION }}
+          aws-role-arn:      ${{ env.TERRAFORM_ROLE }}
+          aws-region:        ${{ env.AWS_REGION }}
+
+      - name: Terraform Init
+        uses: ./.github/actions/terraform-init
+        with:
+          working-directory: terraform
+          state-bucket:      ${{ env.STATE_BUCKET }}
+          aws-region:        ${{ env.AWS_REGION }}
+
+      - name: Terraform Destroy
+        uses: ./.github/actions/terraform-destroy
+        with:
+          working-directory: terraform
+          aws-region:        ${{ env.AWS_REGION }}
+          state-bucket:      ${{ env.STATE_BUCKET }}
+          resource-prefix:   ${{ env.RESOURCE_PREFIX }}

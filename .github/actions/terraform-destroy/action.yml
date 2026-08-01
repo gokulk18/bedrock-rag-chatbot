@@ -1,0 +1,284 @@
+name: "Terraform Destroy"
+description: |
+  Destroys all infrastructure resources in the correct order:
+  1. terraform destroy (removes Terraform-managed resources cleanly)
+  2. Python post-cleanup (removes stuck/unmanaged resources: Bedrock, OpenSearch policies, S3, etc.)
+  3. Purge and delete the Terraform state bucket
+
+inputs:
+  working-directory:
+    description: "Directory containing Terraform configuration."
+    required: true
+  aws-region:
+    description: "AWS region."
+    required: true
+  state-bucket:
+    description: "Name of the Terraform S3 state bucket (deleted last)."
+    required: true
+  resource-prefix:
+    description: "Resource name prefix used to identify owned resources (e.g. bedrock-rag-chatbot)."
+    required: true
+
+runs:
+  using: composite
+  steps:
+    # ------------------------------------------------------------------
+    # Step 1 — Terraform destroy (Terraform-managed resources first)
+    # ------------------------------------------------------------------
+    - name: "Terraform Destroy (managed resources)"
+      shell: bash
+      working-directory: ${{ inputs.working-directory }}
+      run: |
+        echo "Running terraform destroy for all managed resources..."
+        terraform destroy -auto-approve || true
+        echo "Terraform destroy complete (errors suppressed — post-cleanup follows)."
+
+    # ------------------------------------------------------------------
+    # Step 2 — Post-cleanup: stuck / unmanaged AWS resources
+    # ------------------------------------------------------------------
+    - name: "Post-Cleanup: Purge Remaining AWS Resources"
+      shell: bash
+      env:
+        AWS_REGION: ${{ inputs.aws-region }}
+        PREFIX: ${{ inputs.resource-prefix }}
+        STATE_BUCKET: ${{ inputs.state-bucket }}
+      run: |
+        python3 - << 'PYEOF'
+        import boto3, os, time
+
+        region       = os.environ['AWS_REGION']
+        prefix       = os.environ['PREFIX']
+        state_bucket = os.environ['STATE_BUCKET']
+
+        s3      = boto3.client('s3',                    region_name=region)
+        bedrock = boto3.client('bedrock-agent',         region_name=region)
+        aoss    = boto3.client('opensearchserverless',  region_name=region)
+        apigw   = boto3.client('apigatewayv2',          region_name=region)
+        lam     = boto3.client('lambda',                region_name=region)
+        ddb     = boto3.client('dynamodb',              region_name=region)
+        cw      = boto3.client('cloudwatch',            region_name=region)
+        sns     = boto3.client('sns',                   region_name=region)
+        cf      = boto3.client('cloudfront',            region_name=region)
+        iam     = boto3.client('iam')
+
+        # ----------------------------------------------------------------
+        # 1. Disable CloudFront distributions
+        # ----------------------------------------------------------------
+        try:
+            for d in cf.list_distributions().get('DistributionList', {}).get('Items', []):
+                dist_id = d['Id']
+                origins = [o.get('DomainName', '') for o in d.get('Origins', {}).get('Items', [])]
+                if any(prefix in orig for orig in origins) or prefix in d.get('Comment', ''):
+                    try:
+                        res  = cf.get_distribution_config(Id=dist_id)
+                        cfg  = res['DistributionConfig']
+                        etag = res['ETag']
+                        if cfg['Enabled']:
+                            cfg['Enabled'] = False
+                            cf.update_distribution(Id=dist_id, DistributionConfig=cfg, IfMatch=etag)
+                            print(f"Disabled CloudFront distribution {dist_id}")
+                    except Exception as ex:
+                        print(f"CloudFront notice for {dist_id}: {ex}")
+        except Exception as e:
+            print(f"CloudFront cleanup notice: {e}")
+
+        # ----------------------------------------------------------------
+        # 2. Delete API Gateway HTTP APIs
+        # ----------------------------------------------------------------
+        try:
+            for api in apigw.get_apis().get('Items', []):
+                if prefix in api.get('Name', ''):
+                    try:
+                        apigw.delete_api(ApiId=api['ApiId'])
+                        print(f"Deleted API Gateway: {api['Name']}")
+                    except Exception as ex:
+                        print(f"API Gateway notice: {ex}")
+        except Exception as e:
+            print(f"API Gateway cleanup notice: {e}")
+
+        # ----------------------------------------------------------------
+        # 3. Purge and delete S3 buckets (skip state bucket — deleted last)
+        # ----------------------------------------------------------------
+        try:
+            for b in s3.list_buckets().get('Buckets', []):
+                name = b['Name']
+                if prefix in name and name != state_bucket:
+                    try:
+                        print(f"Purging S3 bucket: {name}")
+                        paginator = s3.get_paginator('list_object_versions')
+                        for page in paginator.paginate(Bucket=name):
+                            keys = [{'Key': v['Key'], 'VersionId': v['VersionId']}
+                                    for v in page.get('Versions', [])]
+                            keys += [{'Key': dm['Key'], 'VersionId': dm['VersionId']}
+                                     for dm in page.get('DeleteMarkers', [])]
+                            if keys:
+                                s3.delete_objects(Bucket=name, Delete={'Objects': keys})
+                        s3.delete_bucket(Bucket=name)
+                        print(f"Deleted S3 bucket: {name}")
+                    except Exception as ex:
+                        print(f"S3 notice for {name}: {ex}")
+        except Exception as e:
+            print(f"S3 cleanup notice: {e}")
+
+        # ----------------------------------------------------------------
+        # 4. Delete Bedrock Knowledge Bases & Data Sources
+        # ----------------------------------------------------------------
+        try:
+            for kb in bedrock.list_knowledge_bases().get('knowledgeBaseSummaries', []):
+                kb_id = kb['knowledgeBaseId']
+                if prefix in kb.get('name', ''):
+                    try:
+                        for ds in bedrock.list_data_sources(knowledgeBaseId=kb_id).get('dataSourceSummaries', []):
+                            try:
+                                bedrock.delete_data_source(knowledgeBaseId=kb_id, dataSourceId=ds['dataSourceId'])
+                                print(f"Deleted Bedrock data source: {ds['dataSourceId']}")
+                            except Exception: pass
+                    except Exception: pass
+                    try:
+                        bedrock.delete_knowledge_base(knowledgeBaseId=kb_id)
+                        print(f"Deleted Bedrock Knowledge Base: {kb_id}")
+                    except Exception: pass
+        except Exception as e:
+            print(f"Bedrock cleanup notice: {e}")
+
+        # ----------------------------------------------------------------
+        # 5. Delete OpenSearch Serverless collections & security/access policies
+        # ----------------------------------------------------------------
+        try:
+            for c in aoss.list_collections().get('collectionSummaries', []):
+                if prefix in c.get('name', ''):
+                    try:
+                        aoss.delete_collection(id=c['id'])
+                        print(f"Deleted OpenSearch collection: {c['name']}")
+                    except Exception: pass
+        except Exception as e:
+            print(f"OpenSearch collection notice: {e}")
+
+        for p_type in ['encryption', 'network']:
+            try:
+                for p in aoss.list_security_policies(type=p_type).get('securityPolicySummaries', []):
+                    if prefix in p.get('name', ''):
+                        try:
+                            aoss.delete_security_policy(type=p_type, name=p['name'])
+                            print(f"Deleted OpenSearch {p_type} policy: {p['name']}")
+                        except Exception: pass
+            except Exception: pass
+
+        try:
+            for p in aoss.list_access_policies(type='data').get('accessPolicySummaries', []):
+                if prefix in p.get('name', ''):
+                    try:
+                        aoss.delete_access_policy(type='data', name=p['name'])
+                        print(f"Deleted OpenSearch access policy: {p['name']}")
+                    except Exception: pass
+        except Exception: pass
+
+        # ----------------------------------------------------------------
+        # 6. Delete Lambda functions
+        # ----------------------------------------------------------------
+        try:
+            for f in lam.list_functions().get('Functions', []):
+                if prefix in f.get('FunctionName', ''):
+                    try:
+                        lam.delete_function(FunctionName=f['FunctionName'])
+                        print(f"Deleted Lambda: {f['FunctionName']}")
+                    except Exception: pass
+        except Exception as e:
+            print(f"Lambda cleanup notice: {e}")
+
+        # ----------------------------------------------------------------
+        # 7. Delete DynamoDB tables
+        # ----------------------------------------------------------------
+        try:
+            for t in ddb.list_tables().get('TableNames', []):
+                if prefix in t:
+                    try:
+                        ddb.delete_table(TableName=t)
+                        print(f"Deleted DynamoDB table: {t}")
+                    except Exception: pass
+        except Exception as e:
+            print(f"DynamoDB cleanup notice: {e}")
+
+        # ----------------------------------------------------------------
+        # 8. Delete CloudWatch alarms & SNS topics
+        # ----------------------------------------------------------------
+        try:
+            alarms = [a['AlarmName'] for a in cw.describe_alarms().get('MetricAlarms', [])
+                      if prefix in a.get('AlarmName', '')]
+            if alarms:
+                cw.delete_alarms(AlarmNames=alarms)
+                print(f"Deleted {len(alarms)} CloudWatch alarm(s).")
+        except Exception as e:
+            print(f"CloudWatch notice: {e}")
+
+        try:
+            for t in sns.list_topics().get('Topics', []):
+                if prefix in t['TopicArn']:
+                    sns.delete_topic(TopicArn=t['TopicArn'])
+                    print(f"Deleted SNS topic: {t['TopicArn']}")
+        except Exception as e:
+            print(f"SNS notice: {e}")
+
+        # ----------------------------------------------------------------
+        # 9. Delete IAM roles & policies (inline policies first)
+        # ----------------------------------------------------------------
+        try:
+            for role in iam.list_roles().get('Roles', []):
+                rname = role['RoleName']
+                if prefix in rname:
+                    try:
+                        for p in iam.list_attached_role_policies(RoleName=rname).get('AttachedPolicies', []):
+                            try: iam.detach_role_policy(RoleName=rname, PolicyArn=p['PolicyArn'])
+                            except Exception: pass
+                        for p in iam.list_role_policies(RoleName=rname).get('PolicyNames', []):
+                            try: iam.delete_role_policy(RoleName=rname, PolicyName=p)
+                            except Exception: pass
+                        iam.delete_role(RoleName=rname)
+                        print(f"Deleted IAM role: {rname}")
+                    except Exception: pass
+            for pol in iam.list_policies(Scope='Local').get('Policies', []):
+                if prefix in pol['PolicyName']:
+                    try:
+                        iam.delete_policy(PolicyArn=pol['Arn'])
+                        print(f"Deleted IAM policy: {pol['PolicyName']}")
+                    except Exception: pass
+        except Exception as e:
+            print(f"IAM cleanup notice: {e}")
+
+        print("Post-cleanup complete.")
+        PYEOF
+
+    # ------------------------------------------------------------------
+    # Step 3 — Purge and delete the Terraform state bucket (last)
+    # ------------------------------------------------------------------
+    - name: "Delete Terraform State Bucket"
+      shell: bash
+      env:
+        STATE_BUCKET: ${{ inputs.state-bucket }}
+        AWS_REGION: ${{ inputs.aws-region }}
+      run: |
+        python3 - << 'PYEOF'
+        import boto3, os
+
+        region      = os.environ['AWS_REGION']
+        bucket_name = os.environ['STATE_BUCKET']
+        s3 = boto3.client('s3', region_name=region)
+
+        try:
+            print(f"Purging state bucket: {bucket_name}")
+            paginator = s3.get_paginator('list_object_versions')
+            for page in paginator.paginate(Bucket=bucket_name):
+                keys = [{'Key': v['Key'], 'VersionId': v['VersionId']}
+                        for v in page.get('Versions', [])]
+                keys += [{'Key': dm['Key'], 'VersionId': dm['VersionId']}
+                         for dm in page.get('DeleteMarkers', [])]
+                if keys:
+                    s3.delete_objects(Bucket=bucket_name, Delete={'Objects': keys})
+            s3.delete_bucket(Bucket=bucket_name)
+            print(f"State bucket '{bucket_name}' deleted.")
+        except s3.exceptions.NoSuchBucket:
+            print(f"State bucket '{bucket_name}' does not exist — nothing to delete.")
+        except Exception as e:
+            print(f"State bucket notice: {e}")
+        PYEOF
+        echo "Teardown complete."

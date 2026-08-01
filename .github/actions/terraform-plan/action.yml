@@ -1,0 +1,31 @@
+name: "Terraform Plan"
+description: "Validates and runs terraform plan (normal or destroy mode)."
+
+inputs:
+  working-directory:
+    description: "Directory containing Terraform configuration."
+    required: true
+  destroy:
+    description: "Set to 'true' to run plan -destroy."
+    required: false
+    default: "false"
+
+runs:
+  using: composite
+  steps:
+    - name: Terraform Validate
+      shell: bash
+      working-directory: ${{ inputs.working-directory }}
+      run: terraform validate
+
+    - name: Terraform Plan
+      shell: bash
+      working-directory: ${{ inputs.working-directory }}
+      run: |
+        if [ "${{ inputs.destroy }}" = "true" ]; then
+          echo "Running destroy plan..."
+          terraform plan -destroy -no-color
+        else
+          echo "Running plan..."
+          terraform plan -no-color
+        fi

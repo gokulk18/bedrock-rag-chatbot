@@ -1,0 +1,162 @@
+name: "Terraform Apply"
+description: "Runs the two-phase Terraform apply: OpenSearch collection first, then full apply."
+
+inputs:
+  working-directory:
+    description: "Directory containing Terraform configuration."
+    required: true
+  aws-region:
+    description: "AWS region (used for OpenSearch wait loop)."
+    required: true
+
+outputs:
+  frontend_bucket:
+    description: "S3 bucket name for the frontend."
+    value: ${{ steps.tf_out.outputs.frontend_bucket }}
+  cloudfront_id:
+    description: "CloudFront distribution ID."
+    value: ${{ steps.tf_out.outputs.cloudfront_id }}
+  cloudfront_domain:
+    description: "CloudFront domain name."
+    value: ${{ steps.tf_out.outputs.cloudfront_domain }}
+  chat_endpoint:
+    description: "Chat API Gateway endpoint URL."
+    value: ${{ steps.tf_out.outputs.chat_endpoint }}
+
+runs:
+  using: composite
+  steps:
+    # ------------------------------------------------------------------
+    # Phase 1 — Apply OpenSearch resources first (they need time to create)
+    # ------------------------------------------------------------------
+    - name: "Phase 1: Apply OpenSearch Collection & Policies"
+      shell: bash
+      working-directory: ${{ inputs.working-directory }}
+      run: |
+        terraform apply -auto-approve \
+          -target=module.opensearch.aws_opensearchserverless_security_policy.encryption \
+          -target=module.opensearch.aws_opensearchserverless_security_policy.network \
+          -target=module.opensearch.aws_opensearchserverless_collection.this \
+          -target=module.opensearch.aws_opensearchserverless_access_policy.this
+        echo "OpenSearch collection resources applied."
+
+    # ------------------------------------------------------------------
+    # Phase 1b — Wait until collection is ACTIVE before creating the index
+    # ------------------------------------------------------------------
+    - name: "Phase 1b: Wait for OpenSearch Collection to become ACTIVE"
+      shell: bash
+      working-directory: ${{ inputs.working-directory }}
+      env:
+        AWS_REGION: ${{ inputs.aws-region }}
+      run: |
+        COLLECTION_NAME="bedrock-rag-chatbot-dev-vec"
+        echo "Waiting for collection '$COLLECTION_NAME' to become ACTIVE..."
+        for i in $(seq 1 30); do
+          STATUS=$(aws opensearchserverless list-collections \
+            --collection-filters name="$COLLECTION_NAME" \
+            --query 'collectionSummaries[0].status' \
+            --output text --no-cli-pager 2>/dev/null || echo "UNKNOWN")
+          echo "Attempt $i: status = $STATUS"
+          if [ "$STATUS" = "ACTIVE" ]; then
+            echo "Collection is ACTIVE."
+            break
+          fi
+          if [ "$i" = "30" ]; then
+            echo "ERROR: Collection did not become ACTIVE after 5 minutes."
+            exit 1
+          fi
+          sleep 10
+        done
+
+    # ------------------------------------------------------------------
+    # Phase 1c — Create the kNN vector index inside the collection
+    # ------------------------------------------------------------------
+    - name: "Phase 1c: Create Vector Index in OpenSearch"
+      shell: bash
+      working-directory: ${{ inputs.working-directory }}
+      env:
+        AWS_REGION: ${{ inputs.aws-region }}
+      run: |
+        pip install --quiet opensearch-py requests-aws4auth boto3
+        python3 - << 'PYEOF'
+        import os, sys, boto3
+        from opensearchpy import OpenSearch, RequestsHttpConnection, AWSV4SignerAuth
+
+        region = os.environ.get('AWS_REGION', 'us-east-1')
+        auth   = AWSV4SignerAuth(boto3.Session().get_credentials(), region, 'aoss')
+        endpoint = os.popen('terraform output -raw opensearch_collection_endpoint').read().strip()
+        host = endpoint.replace('https://', '')
+
+        client = OpenSearch(
+            hosts=[{'host': host, 'port': 443}],
+            http_auth=auth,
+            use_ssl=True,
+            verify_certs=True,
+            connection_class=RequestsHttpConnection,
+            pool_maxsize=20,
+        )
+
+        index_name = 'bedrock-knowledge-base-default-index'
+        index_body = {
+            "settings": {
+                "index": {"knn": True, "knn.algo_param.ef_search": 512}
+            },
+            "mappings": {
+                "properties": {
+                    "bedrock-knowledge-base-default-vector": {
+                        "type": "knn_vector",
+                        "dimension": 1024,
+                        "method": {
+                            "name": "hnsw", "engine": "faiss", "space_type": "l2",
+                            "parameters": {"ef_construction": 512, "m": 16}
+                        },
+                    },
+                    "AMAZON_BEDROCK_TEXT_CHUNK": {"type": "text"},
+                    "AMAZON_BEDROCK_METADATA": {"type": "text", "index": False},
+                }
+            },
+        }
+
+        if not client.indices.exists(index=index_name):
+            print(f"Creating index '{index_name}'...")
+            client.indices.create(index=index_name, body=index_body)
+            print("Index created.")
+        else:
+            print(f"Index '{index_name}' already exists — skipping.")
+        PYEOF
+
+    # ------------------------------------------------------------------
+    # Phase 2 — Full apply (all remaining resources)
+    # ------------------------------------------------------------------
+    - name: "Phase 2: Full Terraform Apply"
+      shell: bash
+      working-directory: ${{ inputs.working-directory }}
+      run: terraform apply -auto-approve
+
+    # ------------------------------------------------------------------
+    # Capture outputs for downstream jobs
+    # ------------------------------------------------------------------
+    - name: Capture Terraform Outputs
+      id: tf_out
+      shell: bash
+      working-directory: ${{ inputs.working-directory }}
+      run: |
+        FRONTEND_BUCKET=$(terraform output -raw frontend_bucket_name)
+        CLOUDFRONT_ID=$(terraform output -raw cloudfront_distribution_id)
+        CLOUDFRONT_DOMAIN=$(terraform output -raw cloudfront_domain_name)
+        CHAT_ENDPOINT=$(terraform output -raw chat_endpoint_url)
+
+        echo "frontend_bucket=$FRONTEND_BUCKET"   >> $GITHUB_OUTPUT
+        echo "cloudfront_id=$CLOUDFRONT_ID"       >> $GITHUB_OUTPUT
+        echo "cloudfront_domain=$CLOUDFRONT_DOMAIN" >> $GITHUB_OUTPUT
+        echo "chat_endpoint=$CHAT_ENDPOINT"       >> $GITHUB_OUTPUT
+
+        echo ""
+        echo "=========================================="
+        echo "  Infrastructure Deployed Successfully"
+        echo "=========================================="
+        echo "  Frontend S3 Bucket : $FRONTEND_BUCKET"
+        echo "  CloudFront ID      : $CLOUDFRONT_ID"
+        echo "  CloudFront URL     : https://$CLOUDFRONT_DOMAIN"
+        echo "  Chat API Endpoint  : $CHAT_ENDPOINT"
+        echo "=========================================="

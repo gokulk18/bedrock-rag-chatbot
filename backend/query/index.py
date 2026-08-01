@@ -11,9 +11,12 @@ ssm_client = boto3.client('ssm')
 dynamodb_client = boto3.resource('dynamodb')
 bedrock_agent_runtime_client = boto3.client('bedrock-agent-runtime')
 
+# Amazon Nova Pro - only model used
+NOVA_MODEL_ARN = "arn:aws:bedrock:us-east-1::foundation-model/amazon.nova-pro-v1:0"
+
 def handler(event, context):
     logger.info(f"Received request event: {json.dumps(event)}")
-    
+
     body = {}
     if event.get('body'):
         if isinstance(event['body'], str):
@@ -26,9 +29,9 @@ def handler(event, context):
     else:
         body = event
 
-    prompt = body.get('prompt') or body.get('question')
+    prompt    = body.get('prompt') or body.get('question')
     session_id = body.get('session_id') or body.get('sessionId') or 'default-session'
-    
+
     if not prompt:
         return {
             'statusCode': 400,
@@ -38,92 +41,69 @@ def handler(event, context):
             },
             'body': json.dumps({'error': 'Missing required "prompt" in request body.'})
         }
-        
+
     kb_id_param = os.environ.get('KNOWLEDGE_BASE_ID_PARAM')
-    model_id_param = os.environ.get('MODEL_ID_PARAM')
-    table_name = os.environ.get('CONVERSATION_TABLE_NAME')
-    
+    table_name  = os.environ.get('CONVERSATION_TABLE_NAME')
+
     try:
-        model_id = ssm_client.get_parameter(Name=model_id_param)['Parameter']['Value']
         knowledge_base_id = ssm_client.get_parameter(Name=kb_id_param)['Parameter']['Value']
-        
+
         table = dynamodb_client.Table(table_name)
-        history_res = table.get_item(Key={'session_id': session_id})
+        history_res  = table.get_item(Key={'session_id': session_id})
         history_item = history_res.get('Item', {})
-        messages = history_item.get('messages', [])
-        
-        if model_id.startswith('arn:'):
-            primary_arn = model_id
-        else:
-            primary_arn = f"arn:aws:bedrock:us-east-1::foundation-model/{model_id}"
+        messages     = history_item.get('messages', [])
 
-        candidate_arns = [
-            primary_arn,
-            "arn:aws:bedrock:us-east-1::foundation-model/us.anthropic.claude-3-5-sonnet-20241022-v2:0",
-            "arn:aws:bedrock:us-east-1::foundation-model/us.anthropic.claude-3-5-sonnet-20240620-v1:0",
-            "arn:aws:bedrock:us-east-1::foundation-model/amazon.nova-lite-v1:0",
-            "arn:aws:bedrock:us-east-1::foundation-model/amazon.titan-text-express-v1"
-        ]
-
-        response = None
-        last_error = None
-
-        for candidate_arn in candidate_arns:
-            rag_kwargs = {
-                'input': {'text': prompt},
-                'retrieveAndGenerateConfiguration': {
-                    'type': 'KNOWLEDGE_BASE',
-                    'knowledgeBaseConfiguration': {
-                        'knowledgeBaseId': knowledge_base_id,
-                        'modelArn': candidate_arn
-                    }
+        rag_kwargs = {
+            'input': {'text': prompt},
+            'retrieveAndGenerateConfiguration': {
+                'type': 'KNOWLEDGE_BASE',
+                'knowledgeBaseConfiguration': {
+                    'knowledgeBaseId': knowledge_base_id,
+                    'modelArn': NOVA_MODEL_ARN
                 }
             }
-            if history_item.get('bedrock_session_id'):
-                rag_kwargs['sessionId'] = history_item.get('bedrock_session_id')
+        }
 
-            try:
-                logger.info(f"Attempting RetrieveAndGenerate with modelArn: {candidate_arn}")
+        # Reuse existing Bedrock session for conversational context
+        if history_item.get('bedrock_session_id'):
+            rag_kwargs['sessionId'] = history_item['bedrock_session_id']
+
+        try:
+            logger.info(f"Calling RetrieveAndGenerate with Amazon Nova Pro")
+            response = bedrock_agent_runtime_client.retrieve_and_generate(**rag_kwargs)
+        except Exception as e:
+            err_str = str(e)
+            # Stale session ID — retry without it
+            if 'sessionId' in rag_kwargs and (
+                'cannot be modified' in err_str.lower() or
+                'validationexception' in err_str.lower()
+            ):
+                logger.warning(f"Stale Bedrock session, retrying without sessionId: {err_str}")
+                del rag_kwargs['sessionId']
                 response = bedrock_agent_runtime_client.retrieve_and_generate(**rag_kwargs)
-                break
-            except Exception as e:
-                err_str = str(e)
-                logger.warning(f"Failed with {candidate_arn}: {err_str}")
-                last_error = e
+            else:
+                raise
 
-                # If session ID was stale, retry without session ID first
-                if 'sessionId' in rag_kwargs and ('cannot be modified' in err_str.lower() or 'validationexception' in err_str.lower()):
-                    try:
-                        del rag_kwargs['sessionId']
-                        response = bedrock_agent_runtime_client.retrieve_and_generate(**rag_kwargs)
-                        break
-                    except Exception as retry_err:
-                        last_error = retry_err
-                        continue
-
-        if not response:
-            raise last_error
-        
-        answer = response.get('output', {}).get('text', '')
-        citations = response.get('citations', [])
+        answer           = response.get('output', {}).get('text', '')
+        citations        = response.get('citations', [])
         bedrock_session_id = response.get('sessionId')
-        
+
         new_turn = {
-            'user': prompt,
+            'user':      prompt,
             'assistant': answer,
             'timestamp': int(time.time())
         }
         messages.append(new_turn)
-        
+
         table.put_item(
             Item={
-                'session_id': session_id,
+                'session_id':        session_id,
                 'bedrock_session_id': bedrock_session_id,
-                'messages': messages,
-                'ttl': int(time.time()) + (30 * 24 * 60 * 60)
+                'messages':          messages,
+                'ttl':               int(time.time()) + (30 * 24 * 60 * 60)
             }
         )
-        
+
         return {
             'statusCode': 200,
             'headers': {
@@ -132,10 +112,11 @@ def handler(event, context):
             },
             'body': json.dumps({
                 'session_id': session_id,
-                'answer': answer,
-                'citations': citations
+                'answer':     answer,
+                'citations':  citations
             })
         }
+
     except Exception as e:
         logger.error(f"Error processing query request: {str(e)}")
         return {

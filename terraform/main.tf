@@ -170,7 +170,6 @@ module "query_lambda" {
   memory_size   = 256
 
   environment_variables = {
-    MODEL_ID_PARAM          = module.ssm_bedrock_model_id.parameter_name
     KNOWLEDGE_BASE_ID_PARAM = module.ssm_bedrock_kb_id.parameter_name
     CONVERSATION_TABLE_NAME = module.conversation_history.table_name
   }

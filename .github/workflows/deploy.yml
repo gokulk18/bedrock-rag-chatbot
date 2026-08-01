@@ -67,7 +67,7 @@ jobs:
           destroy: ${{ github.event.inputs.action == 'destroy' }}
 
   apply:
-    name: Terraform Apply
+    name: Terraform Apply/Destroy
     needs: plan
     if: ${{ github.event.inputs.action != 'plan' }}
     runs-on: ubuntu-latest

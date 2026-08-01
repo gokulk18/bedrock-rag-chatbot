@@ -52,7 +52,11 @@ jobs:
     if: ${{ github.event.inputs.action == 'plan' }}
 
     steps:
-      - name: Setup (checkout + Terraform + AWS auth)
+      # Checkout MUST be first — GitHub needs the repo to load local composite actions
+      - name: Checkout Repository
+        uses: actions/checkout@v4
+
+      - name: Setup (Terraform + AWS auth)
         uses: ./.github/actions/terraform-setup
         with:
           terraform-version: ${{ env.TERRAFORM_VERSION }}
@@ -87,7 +91,11 @@ jobs:
       chat_endpoint:     ${{ steps.tf_apply.outputs.chat_endpoint }}
 
     steps:
-      - name: Setup (checkout + Terraform + AWS auth)
+      # Checkout MUST be first — GitHub needs the repo to load local composite actions
+      - name: Checkout Repository
+        uses: actions/checkout@v4
+
+      - name: Setup (Terraform + AWS auth)
         uses: ./.github/actions/terraform-setup
         with:
           terraform-version: ${{ env.TERRAFORM_VERSION }}
@@ -161,7 +169,11 @@ jobs:
     if: ${{ github.event.inputs.action == 'destroy' }}
 
     steps:
-      - name: Setup (checkout + Terraform + AWS auth)
+      # Checkout MUST be first — GitHub needs the repo to load local composite actions
+      - name: Checkout Repository
+        uses: actions/checkout@v4
+
+      - name: Setup (Terraform + AWS auth)
         uses: ./.github/actions/terraform-setup
         with:
           terraform-version: ${{ env.TERRAFORM_VERSION }}

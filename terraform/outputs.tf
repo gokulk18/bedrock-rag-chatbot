@@ -169,6 +169,12 @@ output "budget_name" {
   value       = module.budget.budget_name
 }
 
+output "uploaded_documents" {
+  description = "List of documents automatically uploaded from local documents/ directory to S3."
+  value       = keys(aws_s3_object.initial_documents)
+}
+
+
 
 
 

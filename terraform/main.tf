@@ -154,6 +154,29 @@ module "ingestion_lambda" {
   tags = local.common_tags
 }
 
+# ------------------------------------------------------------------------------
+# Auto-Upload Local Documents to S3 Bucket
+# ------------------------------------------------------------------------------
+# Automatically uploads all files from the local `documents/` directory to S3.
+# Uploading fires S3 ObjectCreated events, which trigger the Ingestion Lambda
+# to automatically index the documents into Amazon Bedrock Knowledge Base.
+resource "aws_s3_object" "initial_documents" {
+  for_each = {
+    for f in fileset("${path.module}/../documents", "**/*") : f => f
+    if !endswith(f, ".gitkeep") && !startswith(f, ".")
+  }
+
+  bucket = module.documents.bucket_id
+  key    = each.value
+  source = "${path.module}/../documents/${each.value}"
+  etag   = filemd5("${path.module}/../documents/${each.value}")
+
+  depends_on = [
+    module.bedrock,
+    module.ingestion_lambda
+  ]
+}
+
 
 # ------------------------------------------------------------------------------
 # Query Lambda Function

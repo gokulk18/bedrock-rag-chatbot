@@ -235,4 +235,6 @@ runs:
         echo "  CloudFront ID      : $CLOUDFRONT_ID"
         echo "  CloudFront URL     : https://$CLOUDFRONT_DOMAIN"
         echo "  Chat API Endpoint  : $CHAT_ENDPOINT"
+        echo "  Uploaded Documents :"
+        terraform output -json uploaded_documents 2>/dev/null | grep '"' || echo "    (none)"
         echo "=========================================="

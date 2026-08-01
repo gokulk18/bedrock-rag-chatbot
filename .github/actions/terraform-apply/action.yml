@@ -27,6 +27,71 @@ runs:
   using: composite
   steps:
     # ------------------------------------------------------------------
+    # Pre-Apply: Import any pre-existing AWS resources into Terraform state
+    # (prevents AlreadyExists / DuplicateRecord errors on re-apply after destroy)
+    # ------------------------------------------------------------------
+    - name: "Pre-Apply: Import Existing Resources into State"
+      shell: bash
+      working-directory: ${{ inputs.working-directory }}
+      env:
+        AWS_REGION: ${{ inputs.aws-region }}
+        PREFIX:     "bedrock-rag-chatbot-dev"
+      run: |
+        ACCOUNT_ID=$(aws sts get-caller-identity --query Account --output text)
+        echo "Account: $ACCOUNT_ID | Importing any pre-existing resources..."
+
+        # ── AWS Budget ────────────────────────────────────────────────
+        BUDGET_NAME="${PREFIX}-monthly-budget"
+        if aws budgets describe-budget \
+              --account-id "$ACCOUNT_ID" \
+              --budget-name "$BUDGET_NAME" \
+              --no-cli-pager 2>/dev/null | grep -q '"BudgetName"'; then
+          echo "Budget '$BUDGET_NAME' exists — importing..."
+          terraform import "module.budget.aws_budgets_budget.this" \
+            "${ACCOUNT_ID}:${BUDGET_NAME}" 2>/dev/null && echo "  ✓ Budget imported" || echo "  → already in state or import failed (continuing)"
+        else
+          echo "Budget '$BUDGET_NAME' not found — skipping import."
+        fi
+
+        # ── CloudFront Origin Access Control ─────────────────────────
+        OAC_NAME="${PREFIX}-oac"
+        OAC_ID=$(aws cloudfront list-origin-access-controls \
+          --no-cli-pager \
+          --query "OriginAccessControlList.Items[?Name=='${OAC_NAME}'].Id | [0]" \
+          --output text 2>/dev/null)
+        if [ -n "$OAC_ID" ] && [ "$OAC_ID" != "None" ]; then
+          echo "CloudFront OAC '$OAC_NAME' (ID: $OAC_ID) exists — importing..."
+          terraform import "module.cloudfront.aws_cloudfront_origin_access_control.this" \
+            "$OAC_ID" 2>/dev/null && echo "  ✓ CloudFront OAC imported" || echo "  → already in state or import failed (continuing)"
+        else
+          echo "CloudFront OAC '$OAC_NAME' not found — skipping import."
+        fi
+
+        # ── CloudWatch Log Groups (Lambda) ────────────────────────────
+        for LG in \
+            "/aws/lambda/${PREFIX}-ingestion" \
+            "/aws/lambda/${PREFIX}-query"; do
+          RESOURCE=""
+          if echo "$LG" | grep -q "ingestion"; then
+            RESOURCE="module.ingestion_lambda.aws_cloudwatch_log_group.this"
+          else
+            RESOURCE="module.query_lambda.aws_cloudwatch_log_group.this"
+          fi
+          EXISTS=$(aws logs describe-log-groups \
+            --log-group-name-prefix "$LG" \
+            --query "logGroups[?logGroupName=='${LG}'].logGroupName | [0]" \
+            --output text 2>/dev/null)
+          if [ "$EXISTS" = "$LG" ]; then
+            echo "Log group '$LG' exists — importing..."
+            terraform import "$RESOURCE" "$LG" 2>/dev/null && echo "  ✓ $LG imported" || echo "  → already in state or import failed (continuing)"
+          else
+            echo "Log group '$LG' not found — skipping import."
+          fi
+        done
+
+        echo "Pre-apply import pass complete."
+
+    # ------------------------------------------------------------------
     # Phase 1 — Apply OpenSearch resources first (they need time to create)
     # ------------------------------------------------------------------
     - name: "Phase 1: Apply OpenSearch Collection & Policies"

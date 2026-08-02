@@ -201,13 +201,27 @@ runs:
             print(f"Index '{index_name}' already exists — skipping.")
         PYEOF
 
+    - name: Download Plan Artifact
+      uses: actions/download-artifact@v4
+      with:
+        name: tfplan
+        path: ${{ inputs.working-directory }}
+      continue-on-error: true
+
     # ------------------------------------------------------------------
-    # Phase 2 — Full apply (all remaining resources)
+    # Phase 2 — Full apply (using exact reviewed plan artifact if available)
     # ------------------------------------------------------------------
     - name: "Phase 2: Full Terraform Apply"
       shell: bash
       working-directory: ${{ inputs.working-directory }}
-      run: terraform apply -auto-approve
+      run: |
+        if [ -f "tfplan" ]; then
+          echo "Applying exact reviewed tfplan artifact..."
+          terraform apply -auto-approve tfplan
+        else
+          echo "Running terraform apply..."
+          terraform apply -auto-approve
+        fi
 
     # ------------------------------------------------------------------
     # Capture outputs for downstream jobs

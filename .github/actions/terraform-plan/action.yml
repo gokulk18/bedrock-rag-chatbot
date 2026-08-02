@@ -1,5 +1,5 @@
 name: "Terraform Plan"
-description: "Validates and runs terraform plan (normal or destroy mode)."
+description: "Validates, generates binary plan artifact (-out=tfplan), uploads artifact, and writes summary."
 
 inputs:
   working-directory:
@@ -19,13 +19,27 @@ runs:
       run: terraform validate
 
     - name: Terraform Plan
+      id: plan
       shell: bash
       working-directory: ${{ inputs.working-directory }}
       run: |
         if [ "${{ inputs.destroy }}" = "true" ]; then
           echo "Running destroy plan..."
-          terraform plan -destroy -no-color
+          terraform plan -destroy -no-color -out=tfplan | tee plan_output.txt
         else
           echo "Running plan..."
-          terraform plan -no-color
+          terraform plan -no-color -out=tfplan | tee plan_output.txt
         fi
+
+        echo "Writing plan output to job summary..."
+        echo "### 📋 Terraform Plan Summary" >> $GITHUB_STEP_SUMMARY
+        echo "\`\`\`hcl" >> $GITHUB_STEP_SUMMARY
+        tail -n 100 plan_output.txt >> $GITHUB_STEP_SUMMARY
+        echo "\`\`\`" >> $GITHUB_STEP_SUMMARY
+
+    - name: Upload Plan Artifact
+      uses: actions/upload-artifact@v4
+      with:
+        name: tfplan
+        path: ${{ inputs.working-directory }}/tfplan
+        retention-days: 7

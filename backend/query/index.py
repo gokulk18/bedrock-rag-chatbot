@@ -14,37 +14,41 @@ bedrock_agent_runtime_client = boto3.client('bedrock-agent-runtime')
 NOVA_MODEL_ARN = "arn:aws:bedrock:us-east-1::foundation-model/amazon.nova-pro-v1:0"
 
 def handler(event, context):
-    logger.info(f"Received request event: {json.dumps(event)}")
-
-    body = {}
-    if event.get('body'):
-        if isinstance(event['body'], str):
-            try:
-                body = json.loads(event['body'])
-            except Exception:
-                body = {}
-        else:
-            body = event['body']
-    else:
-        body = event
-
-    prompt    = body.get('prompt') or body.get('question')
-    session_id = body.get('session_id') or body.get('sessionId') or 'default-session'
-
-    if not prompt:
-        return {
-            'statusCode': 400,
-            'headers': {
-                'Content-Type': 'application/json',
-                'Access-Control-Allow-Origin': '*'
-            },
-            'body': json.dumps({'error': 'Missing required "prompt" in request body.'})
-        }
-
-    kb_id_param = os.environ.get('KNOWLEDGE_BASE_ID_PARAM')
-    table_name  = os.environ.get('CONVERSATION_TABLE_NAME')
+    headers = {
+        'Content-Type': 'application/json',
+        'Access-Control-Allow-Origin': '*',
+        'Access-Control-Allow-Headers': '*',
+        'Access-Control-Allow-Methods': 'OPTIONS,POST'
+    }
 
     try:
+        logger.info(f"Received request event: {json.dumps(event)}")
+
+        body = {}
+        if event.get('body'):
+            if isinstance(event['body'], str):
+                try:
+                    body = json.loads(event['body'])
+                except Exception:
+                    body = {}
+            else:
+                body = event['body']
+        else:
+            body = event
+
+        prompt    = body.get('prompt') or body.get('question')
+        session_id = body.get('session_id') or body.get('sessionId') or 'default-session'
+
+        if not prompt:
+            return {
+                'statusCode': 400,
+                'headers': headers,
+                'body': json.dumps({'error': 'Missing required "prompt" in request body.'})
+            }
+
+        kb_id_param = os.environ.get('KNOWLEDGE_BASE_ID_PARAM')
+        table_name  = os.environ.get('CONVERSATION_TABLE_NAME')
+
         knowledge_base_id = ssm_client.get_parameter(Name=kb_id_param)['Parameter']['Value']
 
         table = dynamodb_client.Table(table_name)
@@ -101,7 +105,7 @@ def handler(event, context):
                         logger.warning(f"Failed model {model_arn} without sessionId: {last_error}")
 
         if not response:
-            raise Exception(f"All Bedrock models exhausted. Last error: {last_error}")
+            raise Exception(f"Bedrock invocation error: {last_error}")
 
         answer           = response.get('output', {}).get('text', '')
         citations        = response.get('citations', [])
@@ -125,10 +129,7 @@ def handler(event, context):
 
         return {
             'statusCode': 200,
-            'headers': {
-                'Content-Type': 'application/json',
-                'Access-Control-Allow-Origin': '*'
-            },
+            'headers': headers,
             'body': json.dumps({
                 'session_id': session_id,
                 'answer':     answer,
@@ -137,13 +138,11 @@ def handler(event, context):
         }
 
     except Exception as e:
-        logger.error(f"Error processing query request: {str(e)}")
+        logger.error(f"Error processing query request: {str(e)}", exc_info=True)
         return {
             'statusCode': 500,
-            'headers': {
-                'Content-Type': 'application/json',
-                'Access-Control-Allow-Origin': '*'
-            },
+            'headers': headers,
             'body': json.dumps({'error': str(e)})
         }
+
 

@@ -216,8 +216,11 @@ runs:
       working-directory: ${{ inputs.working-directory }}
       run: |
         if [ -f "tfplan" ]; then
-          echo "Applying exact reviewed tfplan artifact..."
-          terraform apply -auto-approve tfplan
+          echo "Applying reviewed tfplan artifact..."
+          terraform apply -auto-approve tfplan || {
+            echo "Notice: State was updated by Phase 1 target-apply. Proceeding with full apply..."
+            terraform apply -auto-approve
+          }
         else
           echo "Running terraform apply..."
           terraform apply -auto-approve

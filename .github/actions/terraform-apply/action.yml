@@ -255,3 +255,37 @@ runs:
         echo "  Uploaded Documents :"
         terraform output -json uploaded_documents 2>/dev/null | grep '"' || echo "    (none)"
         echo "=========================================="
+
+    # ------------------------------------------------------------------
+    # Auto-trigger Bedrock Knowledge Base ingestion after apply
+    # Ensures documents are always indexed even after infrastructure recreate
+    # ------------------------------------------------------------------
+    - name: "Trigger Bedrock Knowledge Base Ingestion"
+      shell: bash
+      working-directory: ${{ inputs.working-directory }}
+      env:
+        AWS_REGION: ${{ inputs.aws-region }}
+      run: |
+        KB_ID=$(terraform output -raw bedrock_knowledge_base_id 2>/dev/null || echo "")
+        DS_ID=$(terraform output -raw bedrock_knowledge_base_data_source_id 2>/dev/null || echo "")
+
+        if [ -z "$KB_ID" ] || [ "$KB_ID" = "null" ]; then
+          echo "Knowledge Base ID not found in outputs, skipping ingestion trigger."
+          exit 0
+        fi
+
+        echo "Triggering ingestion sync for KB=$KB_ID DS=$DS_ID ..."
+        JOB=$(aws bedrock-agent start-ingestion-job \
+          --knowledge-base-id "$KB_ID" \
+          --data-source-id "$DS_ID" \
+          --no-cli-pager \
+          --query 'ingestionJob.ingestionJobId' \
+          --output text 2>&1 || echo "SKIP")
+
+        if [ "$JOB" = "SKIP" ] || [ -z "$JOB" ]; then
+          echo "Ingestion trigger skipped (job may already be running or no data source)."
+        else
+          echo "Ingestion job started: $JOB"
+          echo "Documents will be indexed into OpenSearch automatically."
+        fi
+

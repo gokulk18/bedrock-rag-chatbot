@@ -226,7 +226,7 @@
           : (data.message || 'Failed to get a response. Please try again.');
         appendBubble('ai', errText, Date.now());
       }
-
+    } catch (err) {
       typingEl.remove();
       appendBubble('ai', 'Network error: ' + err.message, Date.now());
     } finally {
@@ -236,6 +236,7 @@
       renderHistory();
     }
   }
+
 
   function formatTime(ts) {
     const d = new Date(ts);

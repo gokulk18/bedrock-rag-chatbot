@@ -77,6 +77,15 @@ def handler(event, context):
             ):
                 logger.warning(f"Stale Bedrock session, retrying without sessionId: {err_str}")
                 del rag_kwargs['sessionId']
+                try:
+                    response = bedrock_agent_runtime_client.retrieve_and_generate(**rag_kwargs)
+                except Exception as inner_e:
+                    logger.warning(f"Retrying with US Nova model ARN: {str(inner_e)}")
+                    rag_kwargs['retrieveAndGenerateConfiguration']['knowledgeBaseConfiguration']['modelArn'] = "arn:aws:bedrock:us-east-1::foundation-model/us.amazon.nova-pro-v1:0"
+                    response = bedrock_agent_runtime_client.retrieve_and_generate(**rag_kwargs)
+            elif 'model' in err_str.lower() or 'arn' in err_str.lower() or 'validation' in err_str.lower():
+                logger.warning(f"Retrying with US Nova model ARN: {err_str}")
+                rag_kwargs['retrieveAndGenerateConfiguration']['knowledgeBaseConfiguration']['modelArn'] = "arn:aws:bedrock:us-east-1::foundation-model/us.amazon.nova-pro-v1:0"
                 response = bedrock_agent_runtime_client.retrieve_and_generate(**rag_kwargs)
             else:
                 raise

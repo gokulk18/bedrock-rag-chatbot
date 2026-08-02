@@ -1,18 +1,10 @@
-/* ==========================================================================
-   Nova AI — Frontend Application Logic
-   - Multi-session chat history (localStorage)
-   - Sidebar history panel
-   - Auto-resize textarea / Enter to send
-   - Typing indicator
-   - Source citation pills
-   ========================================================================== */
+
 
 (function () {
   'use strict';
 
   const API_ENDPOINT = window.CHATBOT_API_ENDPOINT || '/chat';
 
-  // ── DOM refs ────────────────────────────────────────────────────────────
   const appShell       = document.getElementById('app-shell');
   const sidebar        = document.getElementById('sidebar');
   const sidebarToggle  = document.getElementById('sidebar-toggle');
@@ -27,18 +19,15 @@
   const userInput      = document.getElementById('user-input');
   const sendBtn        = document.getElementById('send-btn');
 
-  // ── State ───────────────────────────────────────────────────────────────
-  let sessions   = {};   // { [sessionId]: { title, messages: [{role,text,time,citations}] } }
+  let sessions   = {};
   let activeId   = null;
   let isStreaming = false;
 
-  // ── localStorage helpers ─────────────────────────────────────────────────
   function saveSessions()  { localStorage.setItem('nova_sessions', JSON.stringify(sessions)); }
   function loadSessions()  {
     try { sessions = JSON.parse(localStorage.getItem('nova_sessions') || '{}'); } catch { sessions = {}; }
   }
 
-  // ── Session management ───────────────────────────────────────────────────
   function createSession() {
     const id = 'sess-' + Date.now() + '-' + Math.random().toString(36).slice(2, 7);
     sessions[id] = { title: 'New conversation', messages: [] };
@@ -51,7 +40,6 @@
     renderMessages();
     renderHistory();
     topbarTitle.textContent = sessions[id]?.title || 'New conversation';
-    // Show welcome if no messages
     const hasMessages = sessions[id]?.messages?.length > 0;
     welcomeScreen.style.display = hasMessages ? 'none' : '';
     msgContainer.style.display  = hasMessages ? '' : 'none';
@@ -68,7 +56,6 @@
     renderHistory();
   }
 
-  // ── Render history sidebar ───────────────────────────────────────────────
   function renderHistory() {
     historyList.innerHTML = '';
     const ids = Object.keys(sessions).reverse();
@@ -98,7 +85,6 @@
     });
   }
 
-  // ── Render messages ──────────────────────────────────────────────────────
   function renderMessages() {
     msgContainer.innerHTML = '';
     const sess = sessions[activeId];
@@ -112,7 +98,6 @@
     if (area) area.scrollTop = area.scrollHeight;
   }
 
-  // ── Bubble factory ───────────────────────────────────────────────────────
   function appendBubble(role, text, time, citations, animate = true) {
     const row = document.createElement('div');
     row.className = `msg-row ${role}`;
@@ -130,7 +115,6 @@
     bubble.textContent = text;
     wrap.appendChild(bubble);
 
-    // Source pills
     if (citations && citations.length > 0) {
       const sources = new Set();
       citations.forEach(c => {
@@ -156,7 +140,6 @@
       }
     }
 
-    // Time
     const timeEl = document.createElement('div');
     timeEl.className = 'msg-time';
     timeEl.textContent = formatTime(time || Date.now());
@@ -199,19 +182,16 @@
     return row;
   }
 
-  // ── Send message ─────────────────────────────────────────────────────────
   async function sendMessage(prompt) {
     if (!prompt.trim() || isStreaming) return;
     isStreaming = true;
     sendBtn.disabled = true;
 
-    // Hide welcome, show messages
     welcomeScreen.style.display = 'none';
     msgContainer.style.display  = '';
 
     const now = Date.now();
 
-    // Persist user message
     sessions[activeId].messages.push({ role: 'user', text: prompt, time: now });
     if (sessions[activeId].messages.length === 1) autoTitleSession(activeId, prompt);
     saveSessions();
@@ -255,7 +235,6 @@
     }
   }
 
-  // ── Helpers ──────────────────────────────────────────────────────────────
   function formatTime(ts) {
     const d = new Date(ts);
     return d.toLocaleTimeString(undefined, { hour: '2-digit', minute: '2-digit' });
@@ -265,19 +244,16 @@
     return s.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
   }
 
-  // ── Input auto-resize ─────────────────────────────────────────────────────
   function resizeInput() {
     userInput.style.height = 'auto';
     userInput.style.height = Math.min(userInput.scrollHeight, 160) + 'px';
     sendBtn.disabled = !userInput.value.trim() || isStreaming;
   }
 
-  // ── Sidebar toggle ────────────────────────────────────────────────────────
   function toggleSidebar() {
     appShell.classList.toggle('sidebar-collapsed');
   }
 
-  // ── Event listeners ───────────────────────────────────────────────────────
   sidebarToggle.addEventListener('click', toggleSidebar);
   topbarToggle.addEventListener('click', toggleSidebar);
 
@@ -313,7 +289,6 @@
     }
   });
 
-  // Suggestion chips
   document.querySelectorAll('.suggestion-chip').forEach(chip => {
     chip.addEventListener('click', () => {
       const prompt = chip.dataset.prompt;
@@ -321,11 +296,9 @@
     });
   });
 
-  // ── Init ─────────────────────────────────────────────────────────────────
   function init() {
     loadSessions();
 
-    // Pick latest session or create one
     const ids = Object.keys(sessions);
     if (ids.length > 0) {
       activeId = ids[ids.length - 1];

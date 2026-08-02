@@ -31,3 +31,14 @@ terraform.rc
 Thumbs.db
 .idea/
 .vscode/
+
+# Document Generation & Word Architecture Files
+build_docx.py
+*.docx
+~$*.docx
+
+
+
+# Python Bytecode & Cache
+__pycache__/
+*.pyc

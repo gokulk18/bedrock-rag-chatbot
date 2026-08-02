@@ -1,9 +1,3 @@
-# ==============================================================================
-# Reusable AWS Budgets Module
-# ==============================================================================
-# Provisions a monthly USD cost budget with automated notifications at 80% and 100%
-# thresholds sent to an SNS topic.
-# ==============================================================================
 
 resource "aws_budgets_budget" "this" {
   name              = var.budget_name

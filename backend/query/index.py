@@ -11,7 +11,6 @@ ssm_client = boto3.client('ssm')
 dynamodb_client = boto3.resource('dynamodb')
 bedrock_agent_runtime_client = boto3.client('bedrock-agent-runtime')
 
-# Amazon Nova Pro - only model used
 NOVA_MODEL_ARN = "arn:aws:bedrock:us-east-1::foundation-model/amazon.nova-pro-v1:0"
 
 def handler(event, context):
@@ -64,7 +63,6 @@ def handler(event, context):
             }
         }
 
-        # Reuse existing Bedrock session for conversational context
         if history_item.get('bedrock_session_id'):
             rag_kwargs['sessionId'] = history_item['bedrock_session_id']
 
@@ -73,7 +71,6 @@ def handler(event, context):
             response = bedrock_agent_runtime_client.retrieve_and_generate(**rag_kwargs)
         except Exception as e:
             err_str = str(e)
-            # Stale session ID — retry without it
             if 'sessionId' in rag_kwargs and (
                 'cannot be modified' in err_str.lower() or
                 'validationexception' in err_str.lower()

@@ -1,16 +1,4 @@
-# ==============================================================================
-# Reusable CloudFront Module with Origin Access Control (OAC)
-# ==============================================================================
-# Provisions an Amazon CloudFront distribution configured with:
-# - Origin Access Control (OAC) with SigV4 signing for S3 origins
-# - Automatic HTTP to HTTPS redirection
-# - Default root object (index.html)
-# - Least-privilege S3 bucket policy granting access strictly to CloudFront
-# ==============================================================================
 
-# ------------------------------------------------------------------------------
-# Origin Access Control (OAC)
-# ------------------------------------------------------------------------------
 resource "aws_cloudfront_origin_access_control" "this" {
   name                              = var.oac_name
   description                       = "Origin Access Control for CloudFront S3 frontend bucket access."
@@ -19,9 +7,6 @@ resource "aws_cloudfront_origin_access_control" "this" {
   signing_protocol                  = "sigv4"
 }
 
-# ------------------------------------------------------------------------------
-# CloudFront Distribution
-# ------------------------------------------------------------------------------
 resource "aws_cloudfront_distribution" "this" {
   enabled             = true
   is_ipv6_enabled     = true
@@ -66,10 +51,6 @@ resource "aws_cloudfront_distribution" "this" {
   tags = var.tags
 }
 
-# ------------------------------------------------------------------------------
-# S3 Bucket Policy for CloudFront OAC Access
-# ------------------------------------------------------------------------------
-# Grants s3:GetObject permission strictly to this CloudFront distribution ARN.
 resource "aws_s3_bucket_policy" "frontend" {
   bucket = var.bucket_id
 

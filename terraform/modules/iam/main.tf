@@ -1,12 +1,4 @@
-# ==============================================================================
-# Reusable IAM Module
-# ==============================================================================
-# Provisions least-privilege IAM execution roles and policies for:
-# 1. Query Lambda (SSM read, DynamoDB read/write, Bedrock invoke, CloudWatch logs)
-# 2. Ingestion Lambda (S3 documents read, Bedrock ingestion job, CloudWatch logs)
-# ==============================================================================
 
-# Shared Lambda Assume Role Trust Policy Document
 data "aws_iam_policy_document" "lambda_assume_role" {
   statement {
     sid     = "LambdaAssumeRole"
@@ -20,9 +12,6 @@ data "aws_iam_policy_document" "lambda_assume_role" {
   }
 }
 
-# ------------------------------------------------------------------------------
-# Query Lambda IAM Role & Policy
-# ------------------------------------------------------------------------------
 
 resource "aws_iam_role" "query_lambda" {
   name               = "${var.name_prefix}-query-lambda-role"
@@ -31,7 +20,6 @@ resource "aws_iam_role" "query_lambda" {
 }
 
 data "aws_iam_policy_document" "query_lambda" {
-  # CloudWatch Logging Permissions
   statement {
     sid    = "CloudWatchLogsAccess"
     effect = "Allow"
@@ -43,7 +31,6 @@ data "aws_iam_policy_document" "query_lambda" {
     resources = ["arn:aws:logs:*:*:*"]
   }
 
-  # SSM Parameter Store Permission (Read Model ID & KB ID)
   statement {
     sid    = "SSMParameterReadAccess"
     effect = "Allow"
@@ -56,7 +43,6 @@ data "aws_iam_policy_document" "query_lambda" {
     ]
   }
 
-  # DynamoDB Conversation History Permissions
   statement {
     sid    = "DynamoDBConversationHistoryAccess"
     effect = "Allow"
@@ -70,7 +56,6 @@ data "aws_iam_policy_document" "query_lambda" {
     resources = [var.dynamodb_table_arn]
   }
 
-  # Amazon Bedrock Model Invocation & RAG Permissions
   statement {
     sid    = "BedrockModelInvocationAccess"
     effect = "Allow"
@@ -97,9 +82,6 @@ resource "aws_iam_role_policy_attachment" "query_lambda" {
   policy_arn = aws_iam_policy.query_lambda.arn
 }
 
-# ------------------------------------------------------------------------------
-# Ingestion Lambda IAM Role & Policy
-# ------------------------------------------------------------------------------
 
 resource "aws_iam_role" "ingestion_lambda" {
   name               = "${var.name_prefix}-ingestion-lambda-role"
@@ -108,7 +90,6 @@ resource "aws_iam_role" "ingestion_lambda" {
 }
 
 data "aws_iam_policy_document" "ingestion_lambda" {
-  # CloudWatch Logging Permissions
   statement {
     sid    = "CloudWatchLogsAccess"
     effect = "Allow"
@@ -120,7 +101,6 @@ data "aws_iam_policy_document" "ingestion_lambda" {
     resources = ["arn:aws:logs:*:*:*"]
   }
 
-  # SSM Parameter Store Read Permission for Knowledge Base ID
   statement {
     sid    = "SSMParameterReadAccess"
     effect = "Allow"
@@ -132,7 +112,6 @@ data "aws_iam_policy_document" "ingestion_lambda" {
     ]
   }
 
-  # S3 Documents Bucket Read Permissions
   statement {
     sid    = "S3DocumentsReadAccess"
     effect = "Allow"
@@ -146,7 +125,6 @@ data "aws_iam_policy_document" "ingestion_lambda" {
     ]
   }
 
-  # Amazon Bedrock Knowledge Base Ingestion Permissions
   statement {
     sid    = "BedrockIngestionAccess"
     effect = "Allow"
@@ -170,9 +148,6 @@ resource "aws_iam_role_policy_attachment" "ingestion_lambda" {
   policy_arn = aws_iam_policy.ingestion_lambda.arn
 }
 
-# ------------------------------------------------------------------------------
-# Bedrock Knowledge Base Service IAM Role & Policy
-# ------------------------------------------------------------------------------
 
 data "aws_iam_policy_document" "bedrock_kb_assume_role" {
   statement {
@@ -194,7 +169,6 @@ resource "aws_iam_role" "bedrock_kb" {
 }
 
 data "aws_iam_policy_document" "bedrock_kb" {
-  # Embedding Model Invocation Permission
   statement {
     sid       = "BedrockEmbeddingModelAccess"
     effect    = "Allow"
@@ -202,7 +176,6 @@ data "aws_iam_policy_document" "bedrock_kb" {
     resources = ["arn:aws:bedrock:*::foundation-model/amazon.titan-embed-text-v2:0"]
   }
 
-  # S3 Documents Bucket Read Permission
   statement {
     sid     = "S3DocumentsReadAccess"
     effect  = "Allow"
@@ -213,7 +186,6 @@ data "aws_iam_policy_document" "bedrock_kb" {
     ]
   }
 
-  # OpenSearch Serverless Data Plane API Permission
   statement {
     sid       = "OpenSearchServerlessAPIAccess"
     effect    = "Allow"

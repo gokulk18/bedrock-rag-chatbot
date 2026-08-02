@@ -1,9 +1,3 @@
-# ==============================================================================
-# Reusable Amazon SNS Topic Module
-# ==============================================================================
-# Provisions an Amazon SNS topic for system alerts and configures an optional
-# email subscription for administrative notifications.
-# ==============================================================================
 
 resource "aws_sns_topic" "this" {
   name = var.topic_name

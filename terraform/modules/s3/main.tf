@@ -1,21 +1,10 @@
-# ==============================================================================
-# Reusable Secure S3 Bucket Module
-# ==============================================================================
-# Provisions a production-grade Amazon S3 bucket adhering to AWS security standards:
-# - Server-side encryption (AES256)
-# - Object versioning
-# - Full public access blocking
-# - BucketOwnerEnforced object ownership controls
-# ==============================================================================
 
-# Primary S3 bucket container
 resource "aws_s3_bucket" "this" {
   bucket        = var.bucket_name
   force_destroy = true
   tags          = var.tags
 }
 
-# Object versioning configuration
 resource "aws_s3_bucket_versioning" "this" {
   count  = var.enable_versioning ? 1 : 0
   bucket = aws_s3_bucket.this.id
@@ -25,7 +14,6 @@ resource "aws_s3_bucket_versioning" "this" {
   }
 }
 
-# Server-side encryption (AES256) configuration
 resource "aws_s3_bucket_server_side_encryption_configuration" "this" {
   count  = var.enable_encryption ? 1 : 0
   bucket = aws_s3_bucket.this.id
@@ -37,7 +25,6 @@ resource "aws_s3_bucket_server_side_encryption_configuration" "this" {
   }
 }
 
-# Public access block configuration
 resource "aws_s3_bucket_public_access_block" "this" {
   bucket = aws_s3_bucket.this.id
 
@@ -47,7 +34,6 @@ resource "aws_s3_bucket_public_access_block" "this" {
   restrict_public_buckets = true
 }
 
-# Bucket ownership controls (disables legacy ACLs)
 resource "aws_s3_bucket_ownership_controls" "this" {
   bucket = aws_s3_bucket.this.id
 

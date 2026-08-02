@@ -1,8 +1,3 @@
-# ==============================================================================
-# Root Module Outputs
-# ==============================================================================
-# Exports key attributes of the infrastructure resources provisioned in this project.
-# ==============================================================================
 
 output "documents_bucket_id" {
   description = "ID of the Knowledge Base documents S3 bucket."

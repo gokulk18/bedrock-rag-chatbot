@@ -1,6 +1,3 @@
-# ==============================================================================
-# IAM Module Outputs
-# ==============================================================================
 
 output "query_lambda_role_arn" {
   description = "ARN of the Query Lambda execution IAM role."

@@ -1,9 +1,3 @@
-# ==============================================================================
-# Input Variables
-# ==============================================================================
-# Input variable definitions with strong type constraints, validation rules,
-# explicit descriptions, and sensible default values.
-# ==============================================================================
 
 variable "project_name" {
   type        = string

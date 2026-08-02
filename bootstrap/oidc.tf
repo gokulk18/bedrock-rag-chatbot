@@ -1,11 +1,3 @@
-# ==============================================================================
-# GitHub Actions OIDC Identity Provider & IAM Execution Roles
-# ==============================================================================
-# Provisions GitHub OIDC authentication provider and least-privilege IAM roles:
-# 1. github-actions-terraform-role (Infrastructure CI/CD)
-# 2. github-actions-lambda-role    (Backend Lambda deployment)
-# 3. github-actions-frontend-role  (Frontend S3 & CloudFront deployment)
-# ==============================================================================
 
 variable "github_repository" {
   type        = string
@@ -13,9 +5,6 @@ variable "github_repository" {
   default     = "gokulk18/bedrock-rag-chatbot"
 }
 
-# ------------------------------------------------------------------------------
-# GitHub OIDC Identity Provider
-# ------------------------------------------------------------------------------
 resource "aws_iam_openid_connect_provider" "github" {
   url             = "https://token.actions.githubusercontent.com"
   client_id_list  = ["sts.amazonaws.com"]
@@ -27,9 +16,6 @@ resource "aws_iam_openid_connect_provider" "github" {
   tags = local.effective_tags
 }
 
-# ------------------------------------------------------------------------------
-# Shared OIDC Assume Role Trust Policy Document
-# ------------------------------------------------------------------------------
 data "aws_iam_policy_document" "github_oidc_trust" {
   statement {
     sid     = "GitHubActionsOIDCAssumeRole"
@@ -58,9 +44,6 @@ data "aws_iam_policy_document" "github_oidc_trust" {
   }
 }
 
-# ------------------------------------------------------------------------------
-# 1. Terraform CI/CD Role (github-actions-terraform-role)
-# ------------------------------------------------------------------------------
 resource "aws_iam_role" "github_actions_terraform" {
   name               = "github-actions-terraform-role"
   description        = "IAM role assumed by GitHub Actions to manage core infrastructure via Terraform."
@@ -73,9 +56,6 @@ resource "aws_iam_role_policy_attachment" "github_actions_terraform_admin" {
   policy_arn = "arn:aws:iam::aws:policy/AdministratorAccess"
 }
 
-# ------------------------------------------------------------------------------
-# 2. Lambda CI/CD Role (github-actions-lambda-role)
-# ------------------------------------------------------------------------------
 resource "aws_iam_role" "github_actions_lambda" {
   name               = "github-actions-lambda-role"
   description        = "IAM role assumed by GitHub Actions to deploy Lambda code packages."
@@ -119,9 +99,6 @@ resource "aws_iam_role_policy_attachment" "github_actions_lambda" {
   policy_arn = aws_iam_policy.github_actions_lambda.arn
 }
 
-# ------------------------------------------------------------------------------
-# 3. Frontend CI/CD Role (github-actions-frontend-role)
-# ------------------------------------------------------------------------------
 resource "aws_iam_role" "github_actions_frontend" {
   name               = "github-actions-frontend-role"
   description        = "IAM role assumed by GitHub Actions to sync static assets to S3 and invalidate CloudFront."

@@ -1,9 +1,3 @@
-# ==============================================================================
-# Sample Terraform Input Variables
-# ==============================================================================
-# Copy or rename this file to 'terraform.tfvars' to override default values.
-# DO NOT commit real secrets or sensitive keys into version control.
-# ==============================================================================
 
 project_name       = "bedrock-rag-chatbot"
 environment        = "dev"

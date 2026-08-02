@@ -1,8 +1,3 @@
-# ==============================================================================
-# Reusable SSM Parameter Store Module
-# ==============================================================================
-# Provisions an AWS Systems Manager (SSM) Parameter Store resource.
-# ==============================================================================
 
 resource "aws_ssm_parameter" "this" {
   name        = var.parameter_name

@@ -1,6 +1,3 @@
-# ==============================================================================
-# CloudFront Module Outputs
-# ==============================================================================
 
 output "distribution_id" {
   description = "ID of the created CloudFront distribution."

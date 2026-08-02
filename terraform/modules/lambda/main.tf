@@ -1,14 +1,4 @@
-# ==============================================================================
-# Reusable AWS Lambda Module
-# ==============================================================================
-# Provisions an AWS Lambda function with:
-# - Python runtime (3.12)
-# - Inlined source code packaged into a ZIP deployment archive
-# - CloudWatch Log Group with log retention
-# - Optional S3 bucket event notification trigger & execution permission
-# ==============================================================================
 
-# Archives source code into a deployment ZIP package
 data "archive_file" "lambda_zip" {
   type        = "zip"
   output_path = "${path.module}/${var.function_name}.zip"
@@ -19,7 +9,6 @@ data "archive_file" "lambda_zip" {
   }
 }
 
-# Lambda Function Resource
 resource "aws_lambda_function" "this" {
   function_name    = var.function_name
   role             = var.role_arn
@@ -38,16 +27,12 @@ resource "aws_lambda_function" "this" {
   tags = var.tags
 }
 
-# Dedicated CloudWatch Log Group for Lambda Logs
 resource "aws_cloudwatch_log_group" "this" {
   name              = "/aws/lambda/${aws_lambda_function.this.function_name}"
   retention_in_days = var.log_retention_in_days
   tags              = var.tags
 }
 
-# ------------------------------------------------------------------------------
-# Optional S3 Trigger & Permission
-# ------------------------------------------------------------------------------
 
 resource "aws_lambda_permission" "s3" {
   count         = var.enable_s3_trigger ? 1 : 0

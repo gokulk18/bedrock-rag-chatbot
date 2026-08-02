@@ -1,6 +1,3 @@
-# ==============================================================================
-# CloudWatch Module Outputs
-# ==============================================================================
 
 output "alarm_names" {
   description = "List of created CloudWatch alarm names."

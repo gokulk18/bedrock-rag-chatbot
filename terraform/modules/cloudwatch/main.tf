@@ -1,14 +1,4 @@
-# ==============================================================================
-# Reusable Amazon CloudWatch Alarms Module
-# ==============================================================================
-# Provisions metric alarms for:
-# - Query Lambda Errors
-# - API Gateway 5XX Errors
-# - DynamoDB Throttled Requests
-# All alarms publish state changes to the specified SNS topic.
-# ==============================================================================
 
-# Query Lambda Error Alarm
 resource "aws_cloudwatch_metric_alarm" "lambda_errors" {
   alarm_name          = "${var.name_prefix}-query-lambda-errors"
   comparison_operator = "GreaterThanOrEqualToThreshold"
@@ -28,7 +18,6 @@ resource "aws_cloudwatch_metric_alarm" "lambda_errors" {
   tags          = var.tags
 }
 
-# API Gateway 5XX Error Alarm
 resource "aws_cloudwatch_metric_alarm" "api_5xx" {
   alarm_name          = "${var.name_prefix}-api-5xx-errors"
   comparison_operator = "GreaterThanOrEqualToThreshold"
@@ -48,7 +37,6 @@ resource "aws_cloudwatch_metric_alarm" "api_5xx" {
   tags          = var.tags
 }
 
-# DynamoDB Throttled Requests Alarm
 resource "aws_cloudwatch_metric_alarm" "dynamodb_throttles" {
   alarm_name          = "${var.name_prefix}-dynamodb-throttles"
   comparison_operator = "GreaterThanOrEqualToThreshold"

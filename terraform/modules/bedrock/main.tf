@@ -1,13 +1,4 @@
-# ==============================================================================
-# Reusable Amazon Bedrock Knowledge Base Module
-# ==============================================================================
-# Provisions an Amazon Bedrock Knowledge Base backed by OpenSearch Serverless
-# vector search and an S3 data source for document ingestion.
-# ==============================================================================
 
-# ------------------------------------------------------------------------------
-# Amazon Bedrock Knowledge Base
-# ------------------------------------------------------------------------------
 resource "aws_bedrockagent_knowledge_base" "this" {
   name     = var.knowledge_base_name
   role_arn = var.role_arn
@@ -38,9 +29,6 @@ resource "aws_bedrockagent_knowledge_base" "this" {
   tags = var.tags
 }
 
-# ------------------------------------------------------------------------------
-# Amazon Bedrock Knowledge Base S3 Data Source
-# ------------------------------------------------------------------------------
 resource "aws_bedrockagent_data_source" "this" {
   knowledge_base_id    = aws_bedrockagent_knowledge_base.this.id
   name                 = var.data_source_name

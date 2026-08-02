@@ -1,6 +1,3 @@
-# ==============================================================================
-# Bedrock Module Outputs
-# ==============================================================================
 
 output "knowledge_base_id" {
   description = "ID of the created Amazon Bedrock Knowledge Base."

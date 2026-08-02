@@ -1,9 +1,3 @@
-# ==============================================================================
-# Outputs
-# ==============================================================================
-# Exports key attributes of the created remote state S3 bucket and provides
-# a ready-to-use HCL backend configuration block for the main Terraform project.
-# ==============================================================================
 
 output "s3_bucket_name" {
   description = "Name of the S3 bucket created for Terraform remote state storage."

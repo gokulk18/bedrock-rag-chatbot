@@ -1,6 +1,3 @@
-# ==============================================================================
-# OpenSearch Serverless Module Outputs
-# ==============================================================================
 
 output "collection_name" {
   description = "Name of the created OpenSearch Serverless collection."

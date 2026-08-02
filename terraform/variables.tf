@@ -1,9 +1,3 @@
-# ==============================================================================
-# Project Input Variables
-# ==============================================================================
-# Core variable declarations for the Amazon Bedrock RAG Chatbot infrastructure.
-# Every variable includes a type, description, validation rule, and default value.
-# ==============================================================================
 
 variable "project_name" {
   type        = string

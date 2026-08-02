@@ -1,26 +1,6 @@
-# ==============================================================================
-# Amazon Bedrock RAG Chatbot - Main Composition Root
-# ==============================================================================
-# Phase 3: Instantiates the reusable S3 module for Knowledge Base Documents.
-# Phase 4: Instantiates the reusable SSM module for Bedrock Model ID parameter.
-# Phase 5: Instantiates the reusable DynamoDB module for Conversation History.
-# Phase 6: Instantiates the reusable IAM module for Lambda execution roles.
-# Phase 7: Instantiates the reusable OpenSearch Serverless module for vector search.
-# Phase 8: Instantiates the reusable Bedrock module for Knowledge Base & Data Source.
-# Phase 9: Instantiates the reusable Lambda module for Automatic Ingestion.
-# Phase 10: Instantiates the reusable Lambda module for RAG Query Processing.
-# Phase 11: Instantiates the reusable API Gateway module for HTTP API.
-# Phase 12: Instantiates the S3 & CloudFront modules for Frontend Hosting.
-# Phase 13: Instantiates the SNS, CloudWatch, and Budget modules for Monitoring.
-# ==============================================================================
 
-# Data lookup for current AWS account ID (used for globally unique bucket naming)
 data "aws_caller_identity" "current" {}
 
-# ------------------------------------------------------------------------------
-# Knowledge Base Documents Bucket
-# ------------------------------------------------------------------------------
-# Stores source documents (PDFs, TXT, MD) ingested by Amazon Bedrock Knowledge Base.
 module "documents" {
   source = "./modules/s3"
 
@@ -31,10 +11,6 @@ module "documents" {
   tags = local.common_tags
 }
 
-# ------------------------------------------------------------------------------
-# Bedrock Model ID SSM Parameter
-# ------------------------------------------------------------------------------
-# Stores the Amazon Bedrock foundation model ID centrally in SSM Parameter Store.
 module "ssm_bedrock_model_id" {
   source = "./modules/ssm"
 
@@ -47,10 +23,6 @@ module "ssm_bedrock_model_id" {
   tags = local.common_tags
 }
 
-# ------------------------------------------------------------------------------
-# Conversation History DynamoDB Table
-# ------------------------------------------------------------------------------
-# Stores user session conversation history for the Query Lambda.
 module "conversation_history" {
   source = "./modules/dynamodb"
 
@@ -61,10 +33,6 @@ module "conversation_history" {
   tags = local.common_tags
 }
 
-# ------------------------------------------------------------------------------
-# IAM Execution Roles & Policies
-# ------------------------------------------------------------------------------
-# Provisions least-privilege IAM roles and policies for Query and Ingestion Lambdas.
 module "iam" {
   source = "./modules/iam"
 
@@ -77,10 +45,6 @@ module "iam" {
   tags = local.common_tags
 }
 
-# ------------------------------------------------------------------------------
-# OpenSearch Serverless Vector Search Collection
-# ------------------------------------------------------------------------------
-# Provisions the OpenSearch Serverless vector store for Amazon Bedrock Knowledge Base.
 module "opensearch" {
   source = "./modules/opensearch"
 
@@ -95,10 +59,6 @@ module "opensearch" {
   tags = local.common_tags
 }
 
-# ------------------------------------------------------------------------------
-# Amazon Bedrock Knowledge Base & S3 Data Source
-# ------------------------------------------------------------------------------
-# Provisions the Bedrock Knowledge Base backed by OpenSearch Serverless and S3.
 module "bedrock" {
   source = "./modules/bedrock"
 
@@ -111,10 +71,6 @@ module "bedrock" {
   tags = local.common_tags
 }
 
-# ------------------------------------------------------------------------------
-# Bedrock Knowledge Base ID SSM Parameter
-# ------------------------------------------------------------------------------
-# Stores the Amazon Bedrock Knowledge Base ID centrally in SSM Parameter Store.
 module "ssm_bedrock_kb_id" {
   source = "./modules/ssm"
 
@@ -127,10 +83,6 @@ module "ssm_bedrock_kb_id" {
   tags = local.common_tags
 }
 
-# ------------------------------------------------------------------------------
-# Ingestion Lambda Function & S3 Event Trigger
-# ------------------------------------------------------------------------------
-# Automatically starts a Bedrock Knowledge Base ingestion job when S3 objects change.
 module "ingestion_lambda" {
   source = "./modules/lambda"
 
@@ -154,12 +106,6 @@ module "ingestion_lambda" {
   tags = local.common_tags
 }
 
-# ------------------------------------------------------------------------------
-# Auto-Upload Local Documents to S3 Bucket
-# ------------------------------------------------------------------------------
-# Automatically uploads all files from the local `documents/` directory to S3.
-# Uploading fires S3 ObjectCreated events, which trigger the Ingestion Lambda
-# to automatically index the documents into Amazon Bedrock Knowledge Base.
 resource "aws_s3_object" "initial_documents" {
   for_each = {
     for f in fileset("${path.module}/../documents", "**/*") : f => f
@@ -178,10 +124,6 @@ resource "aws_s3_object" "initial_documents" {
 }
 
 
-# ------------------------------------------------------------------------------
-# Query Lambda Function
-# ------------------------------------------------------------------------------
-# Orchestrates user chat requests, DynamoDB history, and Bedrock RetrieveAndGenerate.
 module "query_lambda" {
   source = "./modules/lambda"
 
@@ -203,10 +145,6 @@ module "query_lambda" {
 }
 
 
-# ------------------------------------------------------------------------------
-# API Gateway HTTP API
-# ------------------------------------------------------------------------------
-# Provisions the low-latency HTTP API Gateway exposing POST /chat to Query Lambda.
 module "apigateway" {
   source = "./modules/apigateway"
 
@@ -217,10 +155,6 @@ module "apigateway" {
   tags = local.common_tags
 }
 
-# ------------------------------------------------------------------------------
-# Frontend S3 Bucket & CloudFront CDN Distribution
-# ------------------------------------------------------------------------------
-# Reuses generic S3 module for private frontend bucket & provisions CloudFront OAC.
 module "frontend" {
   source = "./modules/s3"
 
@@ -242,10 +176,6 @@ module "cloudfront" {
   tags = local.common_tags
 }
 
-# ------------------------------------------------------------------------------
-# Monitoring, Alerting & Cost Management
-# ------------------------------------------------------------------------------
-# Provisions SNS topic, CloudWatch metric alarms, and monthly AWS cost budget.
 module "sns" {
   source = "./modules/sns"
 

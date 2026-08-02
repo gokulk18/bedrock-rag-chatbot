@@ -221,10 +221,12 @@
         saveSessions();
         appendBubble('ai', data.answer, aiTime, data.citations || []);
       } else {
-        const errText = data.error || 'Failed to get a response. Please try again.';
+        const errText = (typeof data.error === 'string' && data.error)
+          ? data.error
+          : (data.message || 'Failed to get a response. Please try again.');
         appendBubble('ai', errText, Date.now());
       }
-    } catch (err) {
+
       typingEl.remove();
       appendBubble('ai', 'Network error: ' + err.message, Date.now());
     } finally {

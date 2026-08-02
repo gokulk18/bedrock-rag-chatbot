@@ -52,43 +52,56 @@ def handler(event, context):
         history_item = history_res.get('Item', {})
         messages     = history_item.get('messages', [])
 
-        rag_kwargs = {
-            'input': {'text': prompt},
-            'retrieveAndGenerateConfiguration': {
-                'type': 'KNOWLEDGE_BASE',
-                'knowledgeBaseConfiguration': {
-                    'knowledgeBaseId': knowledge_base_id,
-                    'modelArn': NOVA_MODEL_ARN
+        FALLBACK_MODELS = [
+            "arn:aws:bedrock:us-east-1::foundation-model/amazon.nova-pro-v1:0",
+            "arn:aws:bedrock:us-east-1::foundation-model/us.amazon.nova-pro-v1:0",
+            "arn:aws:bedrock:us-east-1::foundation-model/amazon.nova-lite-v1:0",
+            "arn:aws:bedrock:us-east-1::foundation-model/us.amazon.nova-lite-v1:0",
+            "arn:aws:bedrock:us-east-1::foundation-model/anthropic.claude-3-haiku-20240307-v1:0",
+            "arn:aws:bedrock:us-east-1::foundation-model/amazon.titan-text-express-v1"
+        ]
+
+        response = None
+        last_error = None
+
+        for model_arn in FALLBACK_MODELS:
+            rag_kwargs = {
+                'input': {'text': prompt},
+                'retrieveAndGenerateConfiguration': {
+                    'type': 'KNOWLEDGE_BASE',
+                    'knowledgeBaseConfiguration': {
+                        'knowledgeBaseId': knowledge_base_id,
+                        'modelArn': model_arn
+                    }
                 }
             }
-        }
 
-        if history_item.get('bedrock_session_id'):
-            rag_kwargs['sessionId'] = history_item['bedrock_session_id']
+            if history_item.get('bedrock_session_id'):
+                rag_kwargs['sessionId'] = history_item['bedrock_session_id']
 
-        try:
-            logger.info(f"Calling RetrieveAndGenerate with Amazon Nova Pro")
-            response = bedrock_agent_runtime_client.retrieve_and_generate(**rag_kwargs)
-        except Exception as e:
-            err_str = str(e)
-            if 'sessionId' in rag_kwargs and (
-                'cannot be modified' in err_str.lower() or
-                'validationexception' in err_str.lower()
-            ):
-                logger.warning(f"Stale Bedrock session, retrying without sessionId: {err_str}")
-                del rag_kwargs['sessionId']
-                try:
-                    response = bedrock_agent_runtime_client.retrieve_and_generate(**rag_kwargs)
-                except Exception as inner_e:
-                    logger.warning(f"Retrying with US Nova model ARN: {str(inner_e)}")
-                    rag_kwargs['retrieveAndGenerateConfiguration']['knowledgeBaseConfiguration']['modelArn'] = "arn:aws:bedrock:us-east-1::foundation-model/us.amazon.nova-pro-v1:0"
-                    response = bedrock_agent_runtime_client.retrieve_and_generate(**rag_kwargs)
-            elif 'model' in err_str.lower() or 'arn' in err_str.lower() or 'validation' in err_str.lower():
-                logger.warning(f"Retrying with US Nova model ARN: {err_str}")
-                rag_kwargs['retrieveAndGenerateConfiguration']['knowledgeBaseConfiguration']['modelArn'] = "arn:aws:bedrock:us-east-1::foundation-model/us.amazon.nova-pro-v1:0"
+            try:
+                logger.info(f"Trying RetrieveAndGenerate with model: {model_arn}")
                 response = bedrock_agent_runtime_client.retrieve_and_generate(**rag_kwargs)
-            else:
-                raise
+                logger.info(f"Successfully invoked Bedrock model: {model_arn}")
+                break
+            except Exception as e:
+                err_str = str(e)
+                last_error = err_str
+                logger.warning(f"Failed model {model_arn}: {err_str}")
+
+                if 'sessionId' in rag_kwargs:
+                    try:
+                        logger.info(f"Retrying model {model_arn} without sessionId...")
+                        del rag_kwargs['sessionId']
+                        response = bedrock_agent_runtime_client.retrieve_and_generate(**rag_kwargs)
+                        logger.info(f"Successfully invoked model {model_arn} without sessionId")
+                        break
+                    except Exception as inner_e:
+                        last_error = str(inner_e)
+                        logger.warning(f"Failed model {model_arn} without sessionId: {last_error}")
+
+        if not response:
+            raise Exception(f"All Bedrock models exhausted. Last error: {last_error}")
 
         answer           = response.get('output', {}).get('text', '')
         citations        = response.get('citations', [])
@@ -133,3 +146,4 @@ def handler(event, context):
             },
             'body': json.dumps({'error': str(e)})
         }
+
